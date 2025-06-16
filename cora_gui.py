@@ -2,7 +2,8 @@ import os
 import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QDockWidget, QSlider, QMessageBox
+    QLabel, QPushButton, QLineEdit, QDockWidget, QSlider, QMessageBox,
+    QFileDialog
 )
 from PyQt6.QtCore import Qt
 
@@ -61,6 +62,7 @@ class CoraGUI(QMainWindow):
 
         self.dem_array: np.ndarray | None = None
         self.dem_transform = None
+        self.current_dem_path: str | None = None
 
         self.initUI()
 
@@ -80,8 +82,8 @@ class CoraGUI(QMainWindow):
         dock_widget_content = QWidget()
         dock_layout = QVBoxLayout(dock_widget_content)
 
-        self.load_dem_button = QPushButton("Load Sample DEM (Miami)")
-        self.load_dem_button.clicked.connect(self._load_sample_dem)
+        self.load_dem_button = QPushButton("Load DEM File...")
+        self.load_dem_button.clicked.connect(self._load_dem_via_dialog)
         dock_layout.addWidget(self.load_dem_button)
 
         self.analyze_button = QPushButton("Analyze Flood Risk")
@@ -127,45 +129,55 @@ class CoraGUI(QMainWindow):
         slr_meters = value / 100.0
         self.slr_value_label.setText(f"{slr_meters:.2f}m")
 
-    def _load_sample_dem(self):
+    def _load_dem_via_dialog(self):
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        start_dir = data_dir if os.path.isdir(data_dir) else os.path.expanduser("~")
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open DEM File",
+            start_dir,
+            "GeoTIFF Files (*.tif *.tiff);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        self.current_dem_path = file_path
+
         try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.dirname(os.path.abspath(__file__))
-            sample_dem_path = os.path.join(project_root, "data", "n25_w081_1arc_v3_miami.tif")
-
-            if not os.path.exists(sample_dem_path):
-                QMessageBox.warning(self, "DEM Load Error", f"Sample DEM file not found at {sample_dem_path}")
-                self.dem_array = None
-                self.dem_transform = None
-                return
-
-            print(f"Loading DEM from: {sample_dem_path}...")
-            self.dem_array, self.dem_transform = load_dem(sample_dem_path)
+            print(f"Loading DEM from: {self.current_dem_path}...")
+            self.dem_array, self.dem_transform = load_dem(self.current_dem_path)
             print(f"DEM loaded successfully. Shape: {self.dem_array.shape}, Transform: {self.dem_transform}")
+
             if self.dem_array is not None:
                 self.map_canvas.axes.clear()
                 self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper')
-                self.map_canvas.axes.set_title("Loaded DEM")
+                self.map_canvas.axes.set_title(f"Loaded DEM: {os.path.basename(self.current_dem_path)}")
                 self.map_canvas.axes.set_xlabel("X-coordinate")
                 self.map_canvas.axes.set_ylabel("Y-coordinate")
                 self.map_canvas.fig.tight_layout()
                 self.map_canvas.draw()
-                QMessageBox.information(self, "DEM Loaded", f"DEM '{os.path.basename(sample_dem_path)}' loaded successfully.")
+                QMessageBox.information(self, "DEM Loaded",
+                                        f"DEM '{os.path.basename(self.current_dem_path)}' loaded successfully.")
             else:
                 QMessageBox.critical(self, "DEM Load Error", "DEM data is None after loading attempt.")
                 print("DEM data is None after loading attempt.")
-
+                self.current_dem_path = None
 
         except FileNotFoundError:
-            QMessageBox.critical(self, "DEM Load Error", f"DEM file not found. Please check the path.")
-            print(f"Error: DEM file not found at. Please check the path.")
+            QMessageBox.critical(self, "DEM Load Error", f"DEM file not found at '{self.current_dem_path}'.")
+            print(f"Error: DEM file not found at '{self.current_dem_path}'.")
             self.dem_array = None
             self.dem_transform = None
+            self.current_dem_path = None
         except Exception as e:
-            QMessageBox.critical(self, "DEM Load Error", f"An error occurred while loading DEM: {e}")
+            QMessageBox.critical(self, "DEM Load Error",
+                                 f"An error occurred while loading DEM '{os.path.basename(self.current_dem_path)}': {e}")
             print(f"An error occurred while loading DEM: {e}")
             self.dem_array = None
             self.dem_transform = None
+            self.current_dem_path = None
 
     def _run_analysis(self):
         if self.dem_array is None:
