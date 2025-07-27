@@ -168,7 +168,7 @@ class CoraGUI(QMainWindow):
         bounds = rasterio.transform.array_bounds(height, width, self.dem_transform)
 
         src_crs = self.dem_crs
-        dst_crs = pyproj.CRS("EPSG:4326")  # WGS84
+        dst_crs = pyproj.CRS("EPSG:4326")
 
         transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
 
@@ -248,10 +248,17 @@ class CoraGUI(QMainWindow):
                 height, width = self.dem_array.shape
                 extent = rasterio.transform.array_bounds(height, width, self.dem_transform)
 
-                self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=extent)
+                src_crs = self.dem_crs
+                dst_crs = pyproj.CRS("EPSG:4326")
+                transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+                west, south = transformer.transform(extent[0], extent[1])
+                east, north = transformer.transform(extent[2], extent[3])
+                wgs84_extent = [west, east, south, north]
+
+                self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=wgs84_extent)
                 self.map_canvas.axes.set_title(f"Loaded DEM: {os.path.basename(self.current_dem_path)}")
-                self.map_canvas.axes.set_xlabel("X-coordinate")
-                self.map_canvas.axes.set_ylabel("Y-coordinate")
+                self.map_canvas.axes.set_xlabel("Longitude")
+                self.map_canvas.axes.set_ylabel("Latitude")
                 self.map_canvas.fig.tight_layout()
                 self.map_canvas.draw()
                 QMessageBox.information(self, "DEM Loaded",
