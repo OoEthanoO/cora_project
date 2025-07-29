@@ -17,6 +17,7 @@ import numpy as np
 from cora.utils.data_loader import load_dem
 from cora.core.flood_model import connected_flood
 from cora.utils.osm_handler import fetch_osm_geometries
+from cora.analysis.impact_assessment import raster_to_vector_polygons, find_intersecting_features
 
 
 class MplCanvas(FigureCanvasQTAgg):
@@ -51,8 +52,8 @@ class MplCanvas(FigureCanvasQTAgg):
         else:
             im = self.axes.imshow(flood_mask_array, cmap='Blues', origin='upper', extent=extent)
             self.axes.set_title("Flood Inundation Map")
-            self.axes.set_xlabel("X-coordinate")
-            self.axes.set_ylabel("Y-coordinate")
+            self.axes.set_xlabel("Longitude")
+            self.axes.set_ylabel("Latitude")
 
         self.fig.tight_layout()
         self.draw()
@@ -73,6 +74,7 @@ class CoraGUI(QMainWindow):
         self.dem_crs = None
         self.current_dem_path: str | None = None
         self.buildings_gdf = None
+        self.roads_gdf = None
 
         self.initUI()
 
@@ -99,6 +101,10 @@ class CoraGUI(QMainWindow):
         self.load_osm_button = QPushButton("Load Buildings")
         self.load_osm_button.clicked.connect(self._load_osm_buildings)
         dock_layout.addWidget(self.load_osm_button)
+
+        self.load_roads_button = QPushButton("Load Roads")
+        self.load_roads_button.clicked.connect(self._load_osm_roads)
+        dock_layout.addWidget(self.load_roads_button)
 
         self.clear_cache_button = QPushButton("Clear OSM Cache")
         self.clear_cache_button.clicked.connect(self._clear_osm_cache)
@@ -174,11 +180,11 @@ class CoraGUI(QMainWindow):
 
         west, south = transformer.transform(bounds[0], bounds[1])
         east, north = transformer.transform(bounds[2], bounds[3])
-
         if north < south:
             north, south = south, north
         if east < west:
             east, west = west, east
+        wgs84_extent = [west, east, south, north]
 
         bbox_info = f"N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}"
         reply = QMessageBox.question(self, "Confirm Bounding Box",
@@ -195,10 +201,17 @@ class CoraGUI(QMainWindow):
         try:
             print(f"Fetching OSM building data for bbox: N={north}, S={south}, E={east}, W={west}")
             self.buildings_gdf = fetch_osm_geometries(north, south, east, west, tags)
-            
             count = len(self.buildings_gdf) if self.buildings_gdf is not None else 0
             print(f"Buildings GDF loaded, count: {count}")
 
+            self.map_canvas.axes.clear()
+            self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=wgs84_extent)
+
+
+            if self.roads_gdf is not None and not self.roads_gdf.empty:
+                projected_roads = self.roads_gdf.to_crs(self.dem_crs)
+                self.map_canvas.plot_geodataframe(projected_roads, edgecolor='grey', zorder=2)
+                
             if self.buildings_gdf is not None and not self.buildings_gdf.empty:
                 QMessageBox.information(self, "OSM Data Loaded", f"Successfully fetched {count} building geometries.")
 
@@ -206,16 +219,93 @@ class CoraGUI(QMainWindow):
                     self.buildings_gdf.set_crs("EPSG:4326", inplace=True)
 
                 projected_gdf = self.buildings_gdf.to_crs(self.dem_crs)
-
-                self.map_canvas.plot_geodataframe(projected_gdf, facecolor='none', edgecolor='blue', linewidth=0.5)
+                self.map_canvas.plot_geodataframe(projected_gdf, facecolor='none', edgecolor='blue', linewidth=0.5, zorder=3)
             else:
                 QMessageBox.warning(self, "OSM Data", "No building geometries were found for the given area.")
+
+            self.map_canvas.axes.set_xlabel("Longitude")
+            self.map_canvas.axes.set_ylabel("Latitude")
+            self.map_canvas.fig.tight_layout()
+            self.map_canvas.draw()
 
         except Exception as e:
             error_message = f"Failed to fetch OSM data: {e}"
             print(error_message)
             QMessageBox.critical(self, "OSM Load Error", error_message)
             self.buildings_gdf = None
+
+    def _load_osm_roads(self):
+        if self.dem_array is None or self.dem_transform is None or self.dem_crs is None:
+            QMessageBox.warning(self, "OSM Load Error", "Please load a DEM file first.")
+            return
+
+        height, width = self.dem_array.shape
+        bounds = rasterio.transform.array_bounds(height, width, self.dem_transform)
+
+        src_crs = self.dem_crs
+        dst_crs = pyproj.CRS("EPSG:4326")
+
+        transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+
+        west, south = transformer.transform(bounds[0], bounds[1])
+        east, north = transformer.transform(bounds[2], bounds[3])
+
+        if north < south:
+            north, south = south, north
+        if east < west:
+            east, west = west, east
+        wgs84_extent = [west, east, south, north]
+
+        bbox_info = f"N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}"
+        reply = QMessageBox.question(self, "Confirm Bounding Box",
+                                     f"About to fetch road data for the following bounding box (WGS84):\n\n{bbox_info}\n\nIs this correct?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.Yes)
+
+        if reply == QMessageBox.StandardButton.No:
+            QMessageBox.information(self, "Operation Cancelled", "OSM road data fetch cancelled by user.")
+            return
+
+        tags = {"highway": True}
+
+        try:
+            print(f"Fetching OSM road data for bbox: N={north}, S={south}, E={east}, W={west}")
+            self.roads_gdf = fetch_osm_geometries(north, south, east, west, tags)
+
+            count = len(self.roads_gdf) if self.roads_gdf is not None else 0
+            print(f"Roads GDF loaded, count: {count}")
+
+            self.map_canvas.axes.clear()
+            
+            self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=wgs84_extent)
+
+
+            if self.roads_gdf is not None and not self.roads_gdf.empty:
+                QMessageBox.information(self, "OSM Roads Loaded", f"Successfully fetched {count} road geometries.")
+
+                if self.roads_gdf.crs is None:
+                    self.roads_gdf.set_crs("EPSG:4326", inplace=True)
+
+                projected_gdf = self.roads_gdf.to_crs(self.dem_crs)
+                self.map_canvas.plot_geodataframe(projected_gdf, edgecolor='grey', zorder=2)
+            else:
+                QMessageBox.warning(self, "OSM Roads", "No road geometries were found for the given area.")
+
+
+            if self.buildings_gdf is not None and not self.buildings_gdf.empty:
+                projected_buildings = self.buildings_gdf.to_crs(self.dem_crs)
+                self.map_canvas.plot_geodataframe(projected_buildings, facecolor='none', edgecolor='blue', linewidth=0.5, zorder=3)
+
+            self.map_canvas.axes.set_xlabel("Longitude")
+            self.map_canvas.axes.set_ylabel("Latitude")
+            self.map_canvas.fig.tight_layout()
+            self.map_canvas.draw()
+
+        except Exception as e:
+            error_message = f"Failed to fetch OSM road data: {e}"
+            print(error_message)
+            QMessageBox.critical(self, "OSM Load Error", error_message)
+            self.roads_gdf = None
 
     def _on_slr_slider_changed(self, value):
         slr_meters = value / 100.0
@@ -299,11 +389,38 @@ class CoraGUI(QMainWindow):
 
             height, width = self.dem_array.shape
             extent = rasterio.transform.array_bounds(height, width, self.dem_transform)
-            self.map_canvas.plot_flood_mask(flood_mask, extent=extent)
+
+            src_crs = self.dem_crs
+            dst_crs = pyproj.CRS("EPSG:4326")
+            transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+            west, south = transformer.transform(extent[0], extent[1])
+            east, north = transformer.transform(extent[2], extent[3])
+            wgs84_extent = [west, east, south, north]
+
+            flood_polygons_gdf = raster_to_vector_polygons(flood_mask, self.dem_transform)
+            if hasattr(flood_polygons_gdf, 'set_crs') and (flood_polygons_gdf.crs is None):
+                flood_polygons_gdf.set_crs(self.dem_crs, inplace=True)
 
             if self.buildings_gdf is not None and not self.buildings_gdf.empty:
-                projected_gdf = self.buildings_gdf.to_crs(self.dem_crs)
-                self.map_canvas.plot_geodataframe(projected_gdf, facecolor='red', edgecolor='red', alpha=0.5)
+                poly_buildings_gdf = self.buildings_gdf[
+                    self.buildings_gdf.geometry.type.isin(['Polygon', 'MultiPolygon'])
+                ]
+                if not poly_buildings_gdf.empty:
+                    flooded_buildings_gdf = find_intersecting_features(poly_buildings_gdf, flood_polygons_gdf)
+                    print(f"Flooded buildings count: {len(flooded_buildings_gdf)}")
+                else:
+                    print("No polygonal buildings to analyze for flooding.")
+
+            self.map_canvas.plot_flood_mask(flood_mask, extent=wgs84_extent)
+            self.map_canvas.axes.set_xlabel("Longitude")
+            self.map_canvas.axes.set_ylabel("Latitude")
+
+            if self.roads_gdf is not None and not self.roads_gdf.empty:
+                projected_roads = self.roads_gdf.to_crs(self.dem_crs)
+                self.map_canvas.plot_geodataframe(projected_roads, edgecolor='grey', zorder=2)
+            if self.buildings_gdf is not None and not self.buildings_gdf.empty:
+                projected_buildings = self.buildings_gdf.to_crs(self.dem_crs)
+                self.map_canvas.plot_geodataframe(projected_buildings, facecolor='red', edgecolor='red', alpha=0.5, zorder=3)
 
             QMessageBox.information(self, "Analysis Complete", f"Flood risk analysis finished for SLR {slr_value_meters:.2f}m.")
 
