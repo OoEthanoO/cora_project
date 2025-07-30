@@ -2,3 +2,4 @@ development_plan.md
 full_project_details.md
 cache/
 __pycache__/
+.venv/
