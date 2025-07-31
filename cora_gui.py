@@ -16,7 +16,7 @@ import numpy as np
 
 from cora.utils.data_loader import load_dem
 from cora.core.flood_model import connected_flood
-from cora.utils.osm_handler import fetch_osm_geometries
+from cora.utils.osm_handler import fetch_osm_geometries, mark_critical_infrastructure
 from cora.analysis.impact_assessment import raster_to_vector_polygons, find_intersecting_features
 
 
@@ -114,6 +114,12 @@ class CoraGUI(QMainWindow):
         self.analyze_button.clicked.connect(self._run_analysis)
         dock_layout.addWidget(self.analyze_button)
 
+        self.flooded_buildings_label = QLabel("Flooded Buildings: N/A")
+        dock_layout.addWidget(self.flooded_buildings_label)
+
+        self.flooded_roads_label = QLabel("Flooded Roads (km): N/A")
+        dock_layout.addWidget(self.flooded_roads_label)
+
         lat_layout = QHBoxLayout()
         self.lat_label = QLabel("Latitude:")
         self.lat_input = QLineEdit()
@@ -182,6 +188,12 @@ class CoraGUI(QMainWindow):
         east, north = transformer.transform(bounds[2], bounds[3])
         if north < south:
             north, south = south, north
+        transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+
+        west, south = transformer.transform(bounds[0], bounds[1])
+        east, north = transformer.transform(bounds[2], bounds[3])
+        if north < south:
+            north, south = south, north
         if east < west:
             east, west = west, east
         wgs84_extent = [west, east, south, north]
@@ -201,6 +213,7 @@ class CoraGUI(QMainWindow):
         try:
             print(f"Fetching OSM building data for bbox: N={north}, S={south}, E={east}, W={west}")
             self.buildings_gdf = fetch_osm_geometries(north, south, east, west, tags)
+            self.buildings_gdf = mark_critical_infrastructure(self.buildings_gdf)
             count = len(self.buildings_gdf) if self.buildings_gdf is not None else 0
             print(f"Buildings GDF loaded, count: {count}")
 
@@ -407,9 +420,53 @@ class CoraGUI(QMainWindow):
                 ]
                 if not poly_buildings_gdf.empty:
                     flooded_buildings_gdf = find_intersecting_features(poly_buildings_gdf, flood_polygons_gdf)
-                    print(f"Flooded buildings count: {len(flooded_buildings_gdf)}")
+                    flooded_buildings_count = len(flooded_buildings_gdf)
+                    print(f"Flooded buildings count: {flooded_buildings_count}")
+                    self.flooded_buildings_label.setText(f"Flooded Buildings: {flooded_buildings_count}")
+
+                    if "is_critical" in flooded_buildings_gdf.columns:
+                        flooded_critical_gdf = flooded_buildings_gdf[flooded_buildings_gdf["is_critical"] == True]
+                    else:
+                        flooded_critical_gdf = flooded_buildings_gdf.iloc[0:0]  # Empty DataFrame if column missing
                 else:
                     print("No polygonal buildings to analyze for flooding.")
+                    self.flooded_buildings_label.setText("Flooded Buildings: N/A")
+            else:
+                self.flooded_buildings_label.setText("Flooded Buildings: N/A")
+
+            if self.roads_gdf is not None and not self.roads_gdf.empty:
+                line_roads_gdf = self.roads_gdf[
+                    self.roads_gdf.geometry.type.isin(['LineString', 'MultiLineString'])
+                ]
+                if not line_roads_gdf.empty:
+                    flooded_roads_gdf = find_intersecting_features(line_roads_gdf, flood_polygons_gdf)
+                    if flooded_roads_gdf.crs is None:
+                        flooded_roads_gdf.set_crs(self.dem_crs, inplace=True)
+                    try:
+                        centroid = flooded_roads_gdf.unary_union.centroid
+                        utm_crs = pyproj.CRS.from_user_input(pyproj.database.query_utm_crs_info(
+                            datum_name="WGS 84",
+                            area_of_interest=pyproj.aoi.AreaOfInterest(
+                                west_lon_degree=centroid.x,
+                                south_lat_degree=centroid.y,
+                                east_lon_degree=centroid.x,
+                                north_lat_degree=centroid.y,
+                            ),
+                        )[0].code)
+                        flooded_roads_proj = flooded_roads_gdf.to_crs(utm_crs)
+                        total_length_m = flooded_roads_proj.geometry.length.sum()
+                        total_length_km = total_length_m / 1000.0
+                        print(f"Flooded roads total length: {total_length_km:.2f} km")
+                        self.flooded_roads_label.setText(f"Flooded Roads (km): {total_length_km:.2f}")
+                    except Exception as e:
+                        print(f"Could not project flooded roads for length calculation: {e}")
+                        total_length = flooded_roads_gdf.geometry.length.sum()
+                        self.flooded_roads_label.setText(f"Flooded Roads: {total_length:.2f} (map units)")
+                else:
+                    print("No linear roads to analyze for flooding.")
+                    self.flooded_roads_label.setText("Flooded Roads (km): N/A")
+            else:
+                self.flooded_roads_label.setText("Flooded Roads (km): N/A")
 
             self.map_canvas.plot_flood_mask(flood_mask, extent=wgs84_extent)
             self.map_canvas.axes.set_xlabel("Longitude")

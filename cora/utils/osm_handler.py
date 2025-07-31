@@ -16,6 +16,21 @@ def fetch_osm_geometries(north, south, east, west, tags):
     gdf = ox.features.features_from_bbox(bbox, tags)
     return gdf
 
+def mark_critical_infrastructure(buildings_gdf):
+    if buildings_gdf is None or buildings_gdf.empty:
+        return buildings_gdf
+
+    critical_amenities = {"hospital", "school", "fire_station", "police", "emergency"}
+    def is_critical(row):
+        amenity = row.get("amenity", None)
+        return amenity in critical_amenities
+
+    if "amenity" not in buildings_gdf.columns:
+        buildings_gdf["amenity"] = None
+
+    buildings_gdf["is_critical"] = buildings_gdf.apply(is_critical, axis=1)
+    return buildings_gdf
+
 if __name__ == "__main__":
     test_bbox = {
         "north": 40.684755,
