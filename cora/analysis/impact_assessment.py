@@ -43,5 +43,8 @@ def find_intersecting_features(infra_gdf: gpd.GeoDataFrame, flood_polygons_gdf: 
     if infra_gdf.crs != flood_polygons_gdf.crs:
         flood_polygons_gdf = flood_polygons_gdf.to_crs(infra_gdf.crs)
 
+    infra_gdf = infra_gdf.copy().reset_index(drop=True)
+    flood_polygons_gdf = flood_polygons_gdf.copy().reset_index(drop=True)
+
     intersecting_gdf = gpd.overlay(infra_gdf, flood_polygons_gdf, how='intersection')
     return intersecting_gdf

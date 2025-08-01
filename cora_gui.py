@@ -117,6 +117,12 @@ class CoraGUI(QMainWindow):
         self.flooded_buildings_label = QLabel("Flooded Buildings: N/A")
         dock_layout.addWidget(self.flooded_buildings_label)
 
+        self.flooded_critical_label = QLabel("Flooded Critical Infra: N/A")
+        dock_layout.addWidget(self.flooded_critical_label)
+
+        self.flooded_hospitals_pct_label = QLabel("Flooded Hospitals: N/A")
+        dock_layout.addWidget(self.flooded_hospitals_pct_label)
+
         self.flooded_roads_label = QLabel("Flooded Roads (km): N/A")
         dock_layout.addWidget(self.flooded_roads_label)
 
@@ -171,54 +177,39 @@ class CoraGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Cache Clear Error", f"An error occurred while clearing the cache: {e}")
 
+    def _get_bbox_from_inputs(self, buffer_deg=0.01):
+        try:
+            lat = float(self.lat_input.text())
+            lon = float(self.lon_input.text())
+        except ValueError:
+            QMessageBox.warning(self, "Input Error", "Please enter valid numeric values for latitude and longitude.")
+            return None
+
+        north = lat + buffer_deg
+        south = lat - buffer_deg
+        east = lon + buffer_deg
+        west = lon - buffer_deg
+        return north, south, east, west
+
     def _load_osm_buildings(self):
-        if self.dem_array is None or self.dem_transform is None or self.dem_crs is None:
-            QMessageBox.warning(self, "OSM Load Error", "Please load a DEM file first.")
-            return
-
-        height, width = self.dem_array.shape
-        bounds = rasterio.transform.array_bounds(height, width, self.dem_transform)
-
-        src_crs = self.dem_crs
-        dst_crs = pyproj.CRS("EPSG:4326")
-
-        transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-
-        west, south = transformer.transform(bounds[0], bounds[1])
-        east, north = transformer.transform(bounds[2], bounds[3])
-        if north < south:
-            north, south = south, north
-        transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-
-        west, south = transformer.transform(bounds[0], bounds[1])
-        east, north = transformer.transform(bounds[2], bounds[3])
-        if north < south:
-            north, south = south, north
-        if east < west:
-            east, west = west, east
-        wgs84_extent = [west, east, south, north]
-
-        bbox_info = f"N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}"
-        reply = QMessageBox.question(self, "Confirm Bounding Box",
-                                     f"About to fetch building data for the following bounding box (WGS84):\n\n{bbox_info}\n\nIs this correct?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                     QMessageBox.StandardButton.Yes)
-
-        if reply == QMessageBox.StandardButton.No:
-            QMessageBox.information(self, "Operation Cancelled", "OSM data fetch cancelled by user.")
+        bbox = self._get_bbox_from_inputs()
+        if bbox is not None:
+            north, south, east, west = bbox
+        else:
             return
 
         tags = {"building": True}
-
+        self.statusBar().showMessage("Fetching OSM building data...", 5000)
         try:
             print(f"Fetching OSM building data for bbox: N={north}, S={south}, E={east}, W={west}")
             self.buildings_gdf = fetch_osm_geometries(north, south, east, west, tags)
+            self.statusBar().showMessage("Processing building data...", 5000)
             self.buildings_gdf = mark_critical_infrastructure(self.buildings_gdf)
             count = len(self.buildings_gdf) if self.buildings_gdf is not None else 0
             print(f"Buildings GDF loaded, count: {count}")
 
             self.map_canvas.axes.clear()
-            self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=wgs84_extent)
+            self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
 
 
             if self.roads_gdf is not None and not self.roads_gdf.empty:
@@ -240,58 +231,31 @@ class CoraGUI(QMainWindow):
             self.map_canvas.axes.set_ylabel("Latitude")
             self.map_canvas.fig.tight_layout()
             self.map_canvas.draw()
-
+            self.statusBar().showMessage(f"Loaded {count} buildings.", 5000)
         except Exception as e:
             error_message = f"Failed to fetch OSM data: {e}"
             print(error_message)
             QMessageBox.critical(self, "OSM Load Error", error_message)
             self.buildings_gdf = None
+            self.statusBar().showMessage("Failed to load building data.", 5000)
 
     def _load_osm_roads(self):
-        if self.dem_array is None or self.dem_transform is None or self.dem_crs is None:
-            QMessageBox.warning(self, "OSM Load Error", "Please load a DEM file first.")
-            return
-
-        height, width = self.dem_array.shape
-        bounds = rasterio.transform.array_bounds(height, width, self.dem_transform)
-
-        src_crs = self.dem_crs
-        dst_crs = pyproj.CRS("EPSG:4326")
-
-        transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
-
-        west, south = transformer.transform(bounds[0], bounds[1])
-        east, north = transformer.transform(bounds[2], bounds[3])
-
-        if north < south:
-            north, south = south, north
-        if east < west:
-            east, west = west, east
-        wgs84_extent = [west, east, south, north]
-
-        bbox_info = f"N={north:.4f}, S={south:.4f}, E={east:.4f}, W={west:.4f}"
-        reply = QMessageBox.question(self, "Confirm Bounding Box",
-                                     f"About to fetch road data for the following bounding box (WGS84):\n\n{bbox_info}\n\nIs this correct?",
-                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                     QMessageBox.StandardButton.Yes)
-
-        if reply == QMessageBox.StandardButton.No:
-            QMessageBox.information(self, "Operation Cancelled", "OSM road data fetch cancelled by user.")
+        bbox = self._get_bbox_from_inputs()
+        if bbox is not None:
+            north, south, east, west = bbox
+        else:
             return
 
         tags = {"highway": True}
-
+        self.statusBar().showMessage("Fetching OSM road data...", 5000)
         try:
             print(f"Fetching OSM road data for bbox: N={north}, S={south}, E={east}, W={west}")
             self.roads_gdf = fetch_osm_geometries(north, south, east, west, tags)
-
             count = len(self.roads_gdf) if self.roads_gdf is not None else 0
             print(f"Roads GDF loaded, count: {count}")
 
             self.map_canvas.axes.clear()
-            
-            self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=wgs84_extent)
-
+            self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
 
             if self.roads_gdf is not None and not self.roads_gdf.empty:
                 QMessageBox.information(self, "OSM Roads Loaded", f"Successfully fetched {count} road geometries.")
@@ -313,12 +277,13 @@ class CoraGUI(QMainWindow):
             self.map_canvas.axes.set_ylabel("Latitude")
             self.map_canvas.fig.tight_layout()
             self.map_canvas.draw()
-
+            self.statusBar().showMessage(f"Loaded {count} roads.", 5000)
         except Exception as e:
             error_message = f"Failed to fetch OSM road data: {e}"
             print(error_message)
             QMessageBox.critical(self, "OSM Load Error", error_message)
             self.roads_gdf = None
+            self.statusBar().showMessage("Failed to load road data.", 5000)
 
     def _on_slr_slider_changed(self, value):
         slr_meters = value / 100.0
@@ -356,9 +321,9 @@ class CoraGUI(QMainWindow):
                 transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
                 west, south = transformer.transform(extent[0], extent[1])
                 east, north = transformer.transform(extent[2], extent[3])
-                wgs84_extent = [west, east, south, north]
 
-                self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=wgs84_extent)
+                self.wgs84_extent = [west, east, south, north]
+                self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
                 self.map_canvas.axes.set_title(f"Loaded DEM: {os.path.basename(self.current_dem_path)}")
                 self.map_canvas.axes.set_xlabel("Longitude")
                 self.map_canvas.axes.set_ylabel("Latitude")
@@ -428,6 +393,25 @@ class CoraGUI(QMainWindow):
                         flooded_critical_gdf = flooded_buildings_gdf[flooded_buildings_gdf["is_critical"] == True]
                     else:
                         flooded_critical_gdf = flooded_buildings_gdf.iloc[0:0]  # Empty DataFrame if column missing
+
+                    flooded_critical_count = len(flooded_critical_gdf)
+                    print(f"Flooded critical infrastructure count: {flooded_critical_count}")
+                    self.flooded_critical_label.setText(f"Flooded Critical Infra: {flooded_critical_count}")
+
+                    if "amenity" in self.buildings_gdf.columns:
+                        total_hospitals = self.buildings_gdf[self.buildings_gdf["amenity"] == "hospital"]
+                        n_total_hospitals = len(total_hospitals)
+                        if n_total_hospitals > 0:
+                            flooded_hospitals = flooded_buildings_gdf[flooded_buildings_gdf["amenity"] == "hospital"]
+                            n_flooded_hospitals = len(flooded_hospitals)
+                            pct = (n_flooded_hospitals / n_total_hospitals) * 100
+                            self.flooded_hospitals_pct_label.setText(
+                                f"Flooded Hospitals: {n_flooded_hospitals}/{n_total_hospitals} ({pct:.1f}%)"
+                            )
+                        else:
+                            self.flooded_hospitals_pct_label.setText("Flooded Hospitals: 0/0 (0.0%)")
+                    else:
+                        self.flooded_hospitals_pct_label.setText("Flooded Hospitals: N/A")
                 else:
                     print("No polygonal buildings to analyze for flooding.")
                     self.flooded_buildings_label.setText("Flooded Buildings: N/A")
@@ -468,7 +452,7 @@ class CoraGUI(QMainWindow):
             else:
                 self.flooded_roads_label.setText("Flooded Roads (km): N/A")
 
-            self.map_canvas.plot_flood_mask(flood_mask, extent=wgs84_extent)
+            self.map_canvas.plot_flood_mask(flood_mask, extent=self.wgs84_extent)
             self.map_canvas.axes.set_xlabel("Longitude")
             self.map_canvas.axes.set_ylabel("Latitude")
 
