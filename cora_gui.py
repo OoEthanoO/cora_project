@@ -13,12 +13,13 @@ import rasterio
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import numpy as np
+from shapely.geometry import LineString
 
 from cora.utils.data_loader import load_dem
 from cora.core.flood_model import connected_flood
 from cora.utils.osm_handler import fetch_osm_geometries, mark_critical_infrastructure
 from cora.analysis.impact_assessment import raster_to_vector_polygons, find_intersecting_features
-
+from cora.core.adaptation import apply_sea_wall
 
 class MplCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -76,6 +77,11 @@ class CoraGUI(QMainWindow):
         self.buildings_gdf = None
         self.roads_gdf = None
 
+        self.is_drawing_wall = False
+        self.sea_wall_points = []
+        self.sea_wall_geometry = None
+        self.sea_wall_plot = None
+
         self.initUI()
 
     def initUI(self):
@@ -84,6 +90,8 @@ class CoraGUI(QMainWindow):
 
         self.map_canvas = MplCanvas(self, width=7, height=5, dpi=100)
         self.setCentralWidget(self.map_canvas)
+
+        self.map_canvas.mpl_connect('button_press_event', self._on_map_click)
 
         initial_map_data = np.zeros((10, 10))
         self.map_canvas.plot_flood_mask(initial_map_data)
@@ -113,6 +121,23 @@ class CoraGUI(QMainWindow):
         self.analyze_button = QPushButton("Analyze Flood Risk")
         self.analyze_button.clicked.connect(self._run_analysis)
         dock_layout.addWidget(self.analyze_button)
+
+        self.draw_wall_button = QPushButton("Draw Sea Wall")
+        self.draw_wall_button.clicked.connect(self._toggle_drawing_mode)
+        dock_layout.addWidget(self.draw_wall_button)
+
+        self.clear_wall_button = QPushButton("Clear Sea Wall")
+        self.clear_wall_button.clicked.connect(self._clear_sea_wall)
+        dock_layout.addWidget(self.clear_wall_button)
+
+        wall_height_layout = QHBoxLayout()
+        self.wall_height_label = QLabel("Wall Height (m):")
+        self.wall_height_input = QLineEdit()
+        self.wall_height_input.setText("3.0")  # Default value
+        self.wall_height_input.setPlaceholderText("e.g., 3.0")
+        wall_height_layout.addWidget(self.wall_height_label)
+        wall_height_layout.addWidget(self.wall_height_input)
+        dock_layout.addLayout(wall_height_layout)
 
         self.flooded_buildings_label = QLabel("Flooded Buildings: N/A")
         dock_layout.addWidget(self.flooded_buildings_label)
@@ -362,7 +387,22 @@ class CoraGUI(QMainWindow):
         print(f"Running analysis with SLR: {slr_value_meters:.2f}m")
 
         try:
-            flood_mask = connected_flood(self.dem_array, slr_value_meters)
+            dem_to_analyze = self.dem_array
+            if self.sea_wall_geometry is not None and len(self.sea_wall_points) >= 2:
+                try:
+                    wall_height_str = self.wall_height_input.text()
+                    wall_height = float(wall_height_str)
+                except Exception:
+                    wall_height = 3.0
+                dem_to_analyze = apply_sea_wall(
+                    dem_to_analyze,
+                    self.sea_wall_geometry,
+                    wall_height,
+                    self.dem_transform
+                )
+                print(f"Applied sea wall at height {wall_height}m.")
+
+            flood_mask = connected_flood(dem_to_analyze, slr_value_meters)
             print(f"Flood analysis complete. Flooded cells: {np.sum(flood_mask)}")
 
             height, width = self.dem_array.shape
@@ -468,6 +508,61 @@ class CoraGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Analysis Error", f"An error occurred during flood analysis: {e}")
             print(f"An error occurred during flood analysis: {e}")
+
+    def _toggle_drawing_mode(self):
+        self.is_drawing_wall = not self.is_drawing_wall
+
+        if self.is_drawing_wall:
+            self.draw_wall_button.setText("Finish Drawing")
+            self.statusBar().showMessage("Click on the map to add points for the sea wall.")
+            self.sea_wall_points = []
+            self.sea_wall_geometry = None
+            if self.sea_wall_plot:
+                self.sea_wall_plot[0].remove()
+                self.sea_wall_plot = None
+            self.map_canvas.draw()
+        else:
+            self.draw_wall_button.setText("Draw Sea Wall")
+            if len(self.sea_wall_points) >= 2:
+                self.sea_wall_geometry = LineString(self.sea_wall_points)
+                self.statusBar().showMessage(f"Sea wall path finalized with {len(self.sea_wall_points)} points.", 5000)
+                print(f"Sea wall geometry created: {self.sea_wall_geometry}")
+            else:
+                self.statusBar().showMessage("Sea wall drawing cancelled (not enough points).", 5000)
+                self.sea_wall_points = []
+                if self.sea_wall_plot:
+                    self.sea_wall_plot[0].remove()
+                    self.sea_wall_plot = None
+                self.map_canvas.draw()
+
+    def _on_map_click(self, event):
+        if self.is_drawing_wall and event.xdata is not None and event.ydata is not None:
+            self.sea_wall_points.append((event.xdata, event.ydata))
+            self._update_wall_preview()
+
+    def _update_wall_preview(self):
+        if self.sea_wall_plot:
+            self.sea_wall_plot[0].remove()
+            self.sea_wall_plot = None
+
+        if len(self.sea_wall_points) >= 2:
+            x, y = zip(*self.sea_wall_points)
+            self.sea_wall_plot = self.map_canvas.axes.plot(x, y, color='orange', linewidth=2, marker='o', zorder=10)
+        self.map_canvas.draw()
+
+    def _clear_sea_wall(self):
+        self.sea_wall_points = []
+        self.sea_wall_geometry = None
+        if self.sea_wall_plot:
+            try:
+                self.sea_wall_plot[0].remove()
+            except Exception:
+                self.map_canvas.axes.clear()
+                if self.dem_array is not None and hasattr(self, "wgs84_extent"):
+                    self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
+            self.sea_wall_plot = None
+        self.map_canvas.draw()
+        self.statusBar().showMessage("Sea wall cleared.", 3000)
 
 def main():
     app = QApplication(sys.argv)

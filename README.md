@@ -1,23 +1,32 @@
-# Coastal Risk Analyzer (CORA) - v0.2.0
+# Coastal Risk Analyzer (CORA) - v0.3.0
 
-CORA (Coastal Risk Analyzer) v0.2.0 introduces a Graphical User Interface (GUI) for enhanced usability and a more advanced flood modeling approach. While the original command-line tool for basic "bathtub" inundation remains, the primary focus of this version is the GUI which utilizes a "connected flood" model. This model considers hydraulic connectivity to coastal edges, providing a more realistic flood assessment.
+CORA (Coastal Risk Analyzer) v0.3.0 significantly enhances the analytical capabilities of the GUI by introducing detailed impact assessment metrics, critical infrastructure identification, and performance improvements. This version allows users to not only visualize flood risk but also quantify its impact on buildings, roads, and critical facilities within a user-defined area of interest.
 
-## Key Features in v0.2.0
+## Key Features in v0.3.0
+
+- **Detailed Impact Assessment**: The GUI now displays real-time metrics after an analysis, including:
+  - Total number of flooded buildings.
+  - Total length of flooded roads (in km).
+  - Count of flooded critical infrastructure sites (e.g., hospitals, schools).
+  - Percentage of specific facilities flooded (e.g., "X% of hospitals in flood zone").
+- **Critical Infrastructure Identification**: Automatically tags buildings as 'critical' based on their OSM data (`amenity=hospital`, `school`, `fire_station`, etc.).
+- **User-Defined Area of Interest**: Load infrastructure data (buildings, roads) for a specific location by entering a latitude and longitude, which defines the center of the analysis area.
+- **OSM Data Caching**: Fetched OpenStreetMap data is cached locally to significantly speed up subsequent analyses of the same area. A "Clear Cache" button is provided for manual control.
+- **Performance Enhancements**: Utilizes `rtree` for faster spatial indexing and intersection calculations, making the analysis more efficient.
+- **Enhanced User Experience**: The GUI provides status bar messages for long-running operations and more robust error handling.
+
+## Core Functionality (from previous versions)
 
 - **Graphical User Interface (GUI)**: Built with PyQt6 for interactive analysis.
-  - Load Digital Elevation Model (DEM) files (GeoTIFF format).
-  - Adjust Sea Level Rise (SLR) using an intuitive slider.
-  - Perform flood risk analysis using the `connected_flood` model.
-  - Visualize the resulting flood map directly within the application on an embedded Matplotlib canvas.
-- **Connected Flood Model**: Inundation is calculated based on areas below the specified sea level that are also hydrologically connected to coastal seed points.
-- **CLI Tool**: The original v0.1.0 command-line interface for simple bathtub modeling is still available (see `run_cora.py --help`).
+- **Connected Flood Model**: Inundation is calculated based on areas below a specified sea level that are hydrologically connected to the coast.
+- **CLI Tool**: The original v0.1.0 command-line interface for simple bathtub modeling remains available.
 
 ## Installation
 
 Ensure you have Python installed. Then, install the necessary dependencies:
 
 ```bash
-pip install numpy rasterio matplotlib PyQt6 osmnx
+pip install numpy rasterio matplotlib PyQt6 osmnx rtree geopandas
 ```
 
 ## Running the GUI
