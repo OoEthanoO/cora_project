@@ -13,6 +13,7 @@ import rasterio
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import numpy as np
+from shapely import buffer
 from shapely.geometry import LineString
 
 from cora.utils.data_loader import load_dem
@@ -133,7 +134,7 @@ class CoraGUI(QMainWindow):
         wall_height_layout = QHBoxLayout()
         self.wall_height_label = QLabel("Wall Height (m):")
         self.wall_height_input = QLineEdit()
-        self.wall_height_input.setText("3.0")  # Default value
+        self.wall_height_input.setText("3.0")
         self.wall_height_input.setPlaceholderText("e.g., 3.0")
         wall_height_layout.addWidget(self.wall_height_label)
         wall_height_layout.addWidget(self.wall_height_input)
@@ -166,6 +167,22 @@ class CoraGUI(QMainWindow):
         lon_layout.addWidget(self.lon_label)
         lon_layout.addWidget(self.lon_input)
         dock_layout.addLayout(lon_layout)
+
+        buffer_layout = QHBoxLayout()
+        self.buffer_label = QLabel("Buffer (deg):")
+        self.buffer_slider = QSlider(Qt.Orientation.Horizontal)
+        self.buffer_slider.setRange(1, 100)
+        self.buffer_slider.setValue(10)
+        self.buffer_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.buffer_slider.setTickInterval(5)
+        self.buffer_value_label = QLabel("0.10")
+        buffer_layout.addWidget(self.buffer_label)
+        buffer_layout.addWidget(self.buffer_slider)
+        buffer_layout.addWidget(self.buffer_value_label)
+        dock_layout.addLayout(buffer_layout)
+
+        self.buffer_slider.valueChanged.connect(self._on_buffer_slider_changed)
+        self._on_buffer_slider_changed(self.buffer_slider.value())
 
         slr_layout = QHBoxLayout()
         self.slr_label_text = QLabel("SLR:")
@@ -202,13 +219,16 @@ class CoraGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Cache Clear Error", f"An error occurred while clearing the cache: {e}")
 
-    def _get_bbox_from_inputs(self, buffer_deg=0.01):
+    def _get_bbox_from_inputs(self, buffer_deg=None):
         try:
             lat = float(self.lat_input.text())
             lon = float(self.lon_input.text())
         except ValueError:
             QMessageBox.warning(self, "Input Error", "Please enter valid numeric values for latitude and longitude.")
             return None
+
+        if buffer_deg is None:
+            buffer_deg = self.buffer_slider.value() / 100.0
 
         north = lat + buffer_deg
         south = lat - buffer_deg
@@ -315,6 +335,30 @@ class CoraGUI(QMainWindow):
         self.slr_value_label.setText(f"{slr_meters:.2f}m")
 
     def _load_dem_via_dialog(self):
+        if self.is_drawing_wall:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Load DEM",
+                "You are currently drawing a sea wall. Loading a new DEM will cancel the current drawing. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.is_drawing_wall = False
+                self.draw_wall_button.setText("Draw Sea Wall")
+                self.sea_wall_points = []
+                self.sea_wall_geometry = None
+                if self.sea_wall_plot:
+                    try:
+                        if self.sea_wall_plot[0] in self.map_canvas.axes.lines:
+                            self.sea_wall_plot[0].remove()
+                    except Exception:
+                        pass
+                    self.sea_wall_plot = None
+                self.map_canvas.draw()
+                self.statusBar().showMessage("Sea wall drawing cancelled.", 3000)
+            else:
+                return
+
         data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         start_dir = data_dir if os.path.isdir(data_dir) else os.path.expanduser("~")
 
@@ -432,7 +476,7 @@ class CoraGUI(QMainWindow):
                     if "is_critical" in flooded_buildings_gdf.columns:
                         flooded_critical_gdf = flooded_buildings_gdf[flooded_buildings_gdf["is_critical"] == True]
                     else:
-                        flooded_critical_gdf = flooded_buildings_gdf.iloc[0:0]  # Empty DataFrame if column missing
+                        flooded_critical_gdf = flooded_buildings_gdf.iloc[0:0]
 
                     flooded_critical_count = len(flooded_critical_gdf)
                     print(f"Flooded critical infrastructure count: {flooded_critical_count}")
@@ -518,7 +562,11 @@ class CoraGUI(QMainWindow):
             self.sea_wall_points = []
             self.sea_wall_geometry = None
             if self.sea_wall_plot:
-                self.sea_wall_plot[0].remove()
+                try:
+                    if self.sea_wall_plot[0] in self.map_canvas.axes.lines:
+                        self.sea_wall_plot[0].remove()
+                except Exception:
+                    pass
                 self.sea_wall_plot = None
             self.map_canvas.draw()
         else:
@@ -531,9 +579,28 @@ class CoraGUI(QMainWindow):
                 self.statusBar().showMessage("Sea wall drawing cancelled (not enough points).", 5000)
                 self.sea_wall_points = []
                 if self.sea_wall_plot:
-                    self.sea_wall_plot[0].remove()
+                    try:
+                        if self.sea_wall_plot[0] in self.map_canvas.axes.lines:
+                            self.sea_wall_plot[0].remove()
+                    except Exception:
+                        pass
                     self.sea_wall_plot = None
                 self.map_canvas.draw()
+
+    def _clear_sea_wall(self):
+        self.sea_wall_points = []
+        self.sea_wall_geometry = None
+        if self.sea_wall_plot:
+            try:
+                if self.sea_wall_plot[0] in self.map_canvas.axes.lines:
+                    self.sea_wall_plot[0].remove()
+            except Exception:
+                self.map_canvas.axes.clear()
+                if self.dem_array is not None and hasattr(self, "wgs84_extent"):
+                    self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
+            self.sea_wall_plot = None
+        self.map_canvas.draw()
+        self.statusBar().showMessage("Sea wall cleared.", 3000)
 
     def _on_map_click(self, event):
         if self.is_drawing_wall and event.xdata is not None and event.ydata is not None:
@@ -542,7 +609,11 @@ class CoraGUI(QMainWindow):
 
     def _update_wall_preview(self):
         if self.sea_wall_plot:
-            self.sea_wall_plot[0].remove()
+            try:
+                if self.sea_wall_plot[0] in self.map_canvas.axes.lines:
+                    self.sea_wall_plot[0].remove()
+            except Exception:
+                pass
             self.sea_wall_plot = None
 
         if len(self.sea_wall_points) >= 2:
@@ -550,19 +621,9 @@ class CoraGUI(QMainWindow):
             self.sea_wall_plot = self.map_canvas.axes.plot(x, y, color='orange', linewidth=2, marker='o', zorder=10)
         self.map_canvas.draw()
 
-    def _clear_sea_wall(self):
-        self.sea_wall_points = []
-        self.sea_wall_geometry = None
-        if self.sea_wall_plot:
-            try:
-                self.sea_wall_plot[0].remove()
-            except Exception:
-                self.map_canvas.axes.clear()
-                if self.dem_array is not None and hasattr(self, "wgs84_extent"):
-                    self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
-            self.sea_wall_plot = None
-        self.map_canvas.draw()
-        self.statusBar().showMessage("Sea wall cleared.", 3000)
+    def _on_buffer_slider_changed(self, value):
+        buffer_deg = value / 100.0
+        self.buffer_value_label.setText(f"{buffer_deg:.2f}")
 
 def main():
     app = QApplication(sys.argv)
