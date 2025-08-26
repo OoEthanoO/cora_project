@@ -5,7 +5,7 @@ import osmnx as ox
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QDockWidget, QSlider, QMessageBox,
-    QFileDialog
+    QFileDialog, QComboBox
 )
 from PyQt6.QtCore import Qt
 import pyproj
@@ -82,6 +82,8 @@ class CoraGUI(QMainWindow):
         self.sea_wall_points = []
         self.sea_wall_geometry = None
         self.sea_wall_plot = None
+
+        self.scenario_combo = QComboBox()
 
         self.initUI()
 
@@ -199,6 +201,22 @@ class CoraGUI(QMainWindow):
 
         self.slr_slider.valueChanged.connect(self._on_slr_slider_changed)
         self._on_slr_slider_changed(self.slr_slider.value())
+
+        scenario_layout = QHBoxLayout()
+        scenario_label = QLabel("SLR Scenario:")
+        self.scenario_combo.addItems([
+            "Custom",
+            "2050 Low (0.18m)",
+            "2050 Mid (0.25m)",
+            "2050 High (0.32m)",
+            "2100 Low (0.40m)",
+            "2100 Mid (0.65m)",
+            "2100 High (0.90m)"
+        ])
+        self.scenario_combo.currentTextChanged.connect(self._on_scenario_selected)
+        scenario_layout.addWidget(scenario_label)
+        scenario_layout.addWidget(self.scenario_combo)
+        dock_layout.addLayout(scenario_layout)
 
         dock_layout.addStretch(1)
         self.controls_dock.setWidget(dock_widget_content)
@@ -330,9 +348,23 @@ class CoraGUI(QMainWindow):
             self.roads_gdf = None
             self.statusBar().showMessage("Failed to load road data.", 5000)
 
+    def _on_scenario_selected(self, text):
+        if text == "Custom":
+            return
+        value_str = text.split("(")[1][:-2]
+        value_m = float(value_str)
+        slider_val = int(value_m * 100)
+        self.slr_slider.blockSignals(True)
+        self.slr_slider.setValue(slider_val)
+        self.slr_slider.blockSignals(False)
+        slr_meters = slider_val / 100.0
+        self.slr_value_label.setText(f"{slr_meters:.2f}m")
+
     def _on_slr_slider_changed(self, value):
         slr_meters = value / 100.0
         self.slr_value_label.setText(f"{slr_meters:.2f}m")
+        if self.scenario_combo.currentText() != "Custom":
+            self.scenario_combo.setCurrentText("Custom")
 
     def _load_dem_via_dialog(self):
         if self.is_drawing_wall:
