@@ -2,10 +2,11 @@ import os
 import sys
 import shutil
 import osmnx as ox
+import requests
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QDockWidget, QSlider, QMessageBox,
-    QFileDialog, QComboBox
+    QFileDialog, QComboBox, QCheckBox, QTextEdit
 )
 from PyQt6.QtCore import Qt
 import pyproj
@@ -16,11 +17,13 @@ import numpy as np
 from shapely import buffer
 from shapely.geometry import LineString
 
-from cora.utils.data_loader import load_dem
-from cora.core.flood_model import connected_flood
+from cora.utils.data_loader import load_dem, generate_copernicus_dem_url
+from cora.core.flood_model import connected_flood, connected_flood_with_tidal_baseline
 from cora.utils.osm_handler import fetch_osm_geometries, mark_critical_infrastructure
 from cora.analysis.impact_assessment import raster_to_vector_polygons, find_intersecting_features
+from cora.analysis.economic_impact import calculate_building_damage, format_currency
 from cora.core.adaptation import apply_sea_wall
+from cora.utils.population_data import WorldPopHandler, calculate_population_exposure
 
 class MplCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -84,6 +87,12 @@ class CoraGUI(QMainWindow):
         self.sea_wall_plot = None
 
         self.scenario_combo = QComboBox()
+        
+        self.use_tidal_baseline = True
+        self.current_tidal_info = None
+
+        self.population_handler = None
+        self.population_data = None
 
         self.initUI()
 
@@ -109,6 +118,19 @@ class CoraGUI(QMainWindow):
         self.load_dem_button.clicked.connect(self._load_dem_via_dialog)
         dock_layout.addWidget(self.load_dem_button)
 
+        self.download_dem_button = QPushButton("Download DEM")
+        self.download_dem_button.clicked.connect(self._download_dem)
+        dock_layout.addWidget(self.download_dem_button)
+
+        api_key_layout = QHBoxLayout()
+        self.api_key_label = QLabel("API Key:")
+        self.api_key_input = QLineEdit()
+        self.api_key_input.setPlaceholderText("OpenTopography API Key (required)")
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        api_key_layout.addWidget(self.api_key_label)
+        api_key_layout.addWidget(self.api_key_input)
+        dock_layout.addLayout(api_key_layout)
+
         self.load_osm_button = QPushButton("Load Buildings")
         self.load_osm_button.clicked.connect(self._load_osm_buildings)
         dock_layout.addWidget(self.load_osm_button)
@@ -120,6 +142,21 @@ class CoraGUI(QMainWindow):
         self.clear_cache_button = QPushButton("Clear OSM Cache")
         self.clear_cache_button.clicked.connect(self._clear_osm_cache)
         dock_layout.addWidget(self.clear_cache_button)
+
+        self.auto_populate_button = QPushButton("Auto-populate from DEM")
+        self.auto_populate_button.clicked.connect(self._auto_populate_from_dem)
+        self.auto_populate_button.setEnabled(False)
+        dock_layout.addWidget(self.auto_populate_button)
+
+        self.tidal_checkbox = QCheckBox("Use Tidal Gauge Baseline")
+        self.tidal_checkbox.setChecked(True)
+        self.tidal_checkbox.stateChanged.connect(self._on_tidal_checkbox_changed)
+        dock_layout.addWidget(self.tidal_checkbox)
+
+        self.tidal_info_label = QLabel("Tidal Info: Not loaded")
+        self.tidal_info_label.setWordWrap(True)
+        self.tidal_info_label.setStyleSheet("font-size: 9pt; color: #666;")
+        dock_layout.addWidget(self.tidal_info_label)
 
         self.analyze_button = QPushButton("Analyze Flood Risk")
         self.analyze_button.clicked.connect(self._run_analysis)
@@ -153,6 +190,17 @@ class CoraGUI(QMainWindow):
 
         self.flooded_roads_label = QLabel("Flooded Roads (km): N/A")
         dock_layout.addWidget(self.flooded_roads_label)
+
+        self.economic_damage_label = QLabel("Economic Damage: N/A")
+        self.economic_damage_label.setStyleSheet("font-weight: bold; color: #d32f2f;")
+        dock_layout.addWidget(self.economic_damage_label)
+
+        self.population_exposed_label = QLabel("Population Exposed: N/A")
+        self.population_exposed_label.setStyleSheet("font-weight: bold; color: #1976d2;")
+        dock_layout.addWidget(self.population_exposed_label)
+
+        self.population_percentage_label = QLabel("Population Exposure: N/A")
+        dock_layout.addWidget(self.population_percentage_label)
 
         lat_layout = QHBoxLayout()
         self.lat_label = QLabel("Latitude:")
@@ -221,6 +269,16 @@ class CoraGUI(QMainWindow):
         dock_layout.addStretch(1)
         self.controls_dock.setWidget(dock_widget_content)
 
+    def _on_tidal_checkbox_changed(self, state):
+        self.use_tidal_baseline = state == Qt.CheckState.Checked.value
+        if self.use_tidal_baseline:
+            self.statusBar().showMessage("Tidal gauge baseline enabled", 3000)
+            if self.tidal_info_label.text() == "Tidal Info: Disabled":
+                self.tidal_info_label.setText("Tidal Info: Not loaded")
+        else:
+            self.statusBar().showMessage("Using DEM datum directly", 3000)
+            self.tidal_info_label.setText("Tidal Info: Disabled")
+
     def _clear_osm_cache(self):
         try:
             if hasattr(ox, 'utils') and hasattr(ox.utils, 'clear_cache'):
@@ -236,6 +294,114 @@ class CoraGUI(QMainWindow):
                     QMessageBox.warning(self, "Cache Clear Error", f"An error occurred while clearing the cache: {e}")
         except Exception as e:
             QMessageBox.critical(self, "Cache Clear Error", f"An error occurred while clearing the cache: {e}")
+
+    def _auto_populate_from_dem(self):
+        if self.dem_array is None or self.dem_transform is None or self.dem_crs is None:
+            QMessageBox.warning(self, "No DEM", "No DEM is currently loaded.")
+            return
+        
+        try:
+            height, width = self.dem_array.shape
+            extent = rasterio.transform.array_bounds(height, width, self.dem_transform)
+
+            src_crs = self.dem_crs
+            dst_crs = pyproj.CRS("EPSG:4326")
+            transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+
+            west, south = transformer.transform(extent[0], extent[1])
+            east, north = transformer.transform(extent[2], extent[3])
+
+            center_lat = (north + south) / 2
+            center_lon = (east + west) / 2
+
+            lat_extent = north - south
+            lon_extent = east - west
+            buffer_deg = max(lat_extent, lon_extent) / 2
+
+            self.lat_input.setText(f"{center_lat:.6f}")
+            self.lon_input.setText(f"{center_lon:.6f}")
+
+            buffer_slider_value = int(buffer_deg * 100)
+            buffer_slider_value = max(1, min(100, buffer_slider_value))
+            self.buffer_slider.setValue(buffer_slider_value)
+
+            QMessageBox.information(
+                self,
+                "Auto-populated",
+                f"Populated from DEM extent:\n"
+                f"Center: {center_lat:.6f}, {center_lon:.6f}\n"
+                f"Buffer: {buffer_deg:.4f}°"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to auto-populate from DEM: {e}")
+
+    def _download_dem(self):
+        bbox = self._get_bbox_from_inputs()
+        if bbox is not None:
+            api_key = self.api_key_input.text().strip()
+            if not api_key:
+                QMessageBox.warning(self, "API Key Required", "Please enter your OpenTopography API key to download DEM data.")
+                return
+            
+            north, south, east, west = bbox
+            url = generate_copernicus_dem_url(south, north, west, east, api_key)
+            
+            downloads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+            os.makedirs(downloads_dir, exist_ok=True)
+            
+            filename = f"copernicus_dem_{south:.4f}_{north:.4f}_{west:.4f}_{east:.4f}.tif"
+            filepath = os.path.join(downloads_dir, filename)
+            
+            try:
+                self.statusBar().showMessage("Downloading DEM file...", 0)
+                QApplication.processEvents()
+                
+                response = requests.get(url, stream=True, timeout=300)
+                response.raise_for_status()
+                
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                self.statusBar().showMessage("DEM downloaded successfully. Loading...", 3000)
+                
+                self.current_dem_path = filepath
+                self.dem_array, self.dem_transform, self.dem_crs = load_dem(self.current_dem_path)
+                
+                if self.dem_array is not None:
+                    self.map_canvas.axes.clear()
+                    
+                    height, width = self.dem_array.shape
+                    extent = rasterio.transform.array_bounds(height, width, self.dem_transform)
+
+                    src_crs = self.dem_crs
+                    dst_crs = pyproj.CRS("EPSG:4326")
+                    transformer = pyproj.Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+                    west_wgs, south_wgs = transformer.transform(extent[0], extent[1])
+                    east_wgs, north_wgs = transformer.transform(extent[2], extent[3])
+
+                    self.wgs84_extent = [west_wgs, east_wgs, south_wgs, north_wgs]
+                    self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
+                    self.map_canvas.axes.set_title(f"Downloaded DEM: {filename}")
+                    self.map_canvas.axes.set_xlabel("Longitude")
+                    self.map_canvas.axes.set_ylabel("Latitude")
+                    self.map_canvas.fig.tight_layout()
+                    self.map_canvas.draw()
+
+                    self.auto_populate_button.setEnabled(True)
+                    
+                    QMessageBox.information(self, "DEM Downloaded", 
+                                          f"DEM downloaded and loaded successfully!\nSaved to: {filepath}")
+                else:
+                    QMessageBox.critical(self, "DEM Load Error", "Downloaded file could not be loaded as a valid DEM.")
+                    
+            except requests.exceptions.RequestException as e:
+                QMessageBox.critical(self, "Download Error", f"Failed to download DEM: {e}")
+                self.statusBar().showMessage("Download failed.", 5000)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"An error occurred: {e}")
+                self.statusBar().showMessage("Download failed.", 5000)
 
     def _get_bbox_from_inputs(self, buffer_deg=None):
         try:
@@ -430,6 +596,9 @@ class CoraGUI(QMainWindow):
                 self.map_canvas.axes.set_ylabel("Latitude")
                 self.map_canvas.fig.tight_layout()
                 self.map_canvas.draw()
+
+                self.auto_populate_button.setEnabled(True)
+
                 QMessageBox.information(self, "DEM Loaded",
                                         f"DEM '{os.path.basename(self.current_dem_path)}' loaded successfully.")
             else:
@@ -444,6 +613,7 @@ class CoraGUI(QMainWindow):
             self.dem_transform = None
             self.dem_crs = None
             self.current_dem_path = None
+            self.auto_populate_button.setEnabled(False)
         except Exception as e:
             QMessageBox.critical(self, "DEM Load Error",
                                  f"An error occurred while loading DEM '{os.path.basename(self.current_dem_path)}': {e}")
@@ -452,11 +622,18 @@ class CoraGUI(QMainWindow):
             self.dem_transform = None
             self.dem_crs = None
             self.current_dem_path = None
+            self.auto_populate_button.setEnabled(False)
 
     def _run_analysis(self):
         if self.dem_array is None:
             QMessageBox.warning(self, "Analysis Error", "No DEM loaded. Please load a DEM file first.")
             return
+
+        try:
+            lat = float(self.lat_input.text()) if self.lat_input.text() else None
+            lon = float(self.lon_input.text()) if self.lon_input.text() else None
+        except ValueError:
+            lat, lon = None, None
 
         slr_value_cm = self.slr_slider.value()
         slr_value_meters = slr_value_cm / 100.0
@@ -478,9 +655,43 @@ class CoraGUI(QMainWindow):
                 )
                 print(f"Applied sea wall at height {wall_height}m.")
 
-            flood_mask = connected_flood(dem_to_analyze, slr_value_meters)
+            if self.use_tidal_baseline and lat is not None and lon is not None:
+                self.statusBar().showMessage("Looking up tidal gauge data...", 0)
+                QApplication.processEvents()
+                
+                flood_mask, tidal_info = connected_flood_with_tidal_baseline(
+                    dem_to_analyze, slr_value_meters, lat, lon, use_tidal_baseline=True
+                )
+                
+                self.current_tidal_info = tidal_info
+                
+                if tidal_info and 'error' not in tidal_info:
+                    info_text = (f"Station: {tidal_info['station_name']} "
+                               f"({tidal_info['distance_km']:.1f} km)\n"
+                               f"Baseline: {tidal_info['baseline_m']:.3f}m, "
+                               f"Effective: {tidal_info['effective_sea_level']:.3f}m")
+                    self.tidal_info_label.setText(f"Tidal Info: {info_text}")
+                    print(f"Using tidal baseline: {tidal_info}")
+                else:
+                    error_msg = tidal_info.get('error', 'Unknown error') if tidal_info else 'No data'
+                    self.tidal_info_label.setText(f"Tidal Info: Error - {error_msg}")
+                    print(f"Tidal baseline error: {error_msg}")
+            else:
+                flood_mask = connected_flood(dem_to_analyze, slr_value_meters)
+                self.current_tidal_info = None
+                if not self.use_tidal_baseline:
+                    self.tidal_info_label.setText("Tidal Info: Disabled")
+                else:
+                    self.tidal_info_label.setText("Tidal Info: No coordinates provided")
+
             print(f"Flood analysis complete. Flooded cells: {np.sum(flood_mask)}")
 
+            if self.population_handler is None:
+                self.population_handler = WorldPopHandler()
+
+            population_exposed = 0
+            population_stats = {}
+                    
             height, width = self.dem_array.shape
             extent = rasterio.transform.array_bounds(height, width, self.dem_transform)
 
@@ -528,11 +739,27 @@ class CoraGUI(QMainWindow):
                             self.flooded_hospitals_pct_label.setText("Flooded Hospitals: 0/0 (0.0%)")
                     else:
                         self.flooded_hospitals_pct_label.setText("Flooded Hospitals: N/A")
+
+                    try:
+                        total_damage, damage_by_type = calculate_building_damage(
+                            flooded_buildings_gdf, 
+                            flood_depth_m=slr_value_meters
+                        )
+                        damage_text = format_currency(total_damage)
+                        self.economic_damage_label.setText(f"Economic Damage: {damage_text}")
+                        print(f"Economic damage calculated: {damage_text}")
+                        print(f"Damage by type: {damage_by_type}")
+                    except Exception as e:
+                        print(f"Error calculating economic damage: {e}")
+                        self.economic_damage_label.setText("Economic Damage: Error")
+
                 else:
                     print("No polygonal buildings to analyze for flooding.")
                     self.flooded_buildings_label.setText("Flooded Buildings: N/A")
+                    self.economic_damage_label.setText("Economic Damage: N/A")
             else:
                 self.flooded_buildings_label.setText("Flooded Buildings: N/A")
+                self.economic_damage_label.setText("Economic Damage: N/A")
 
             if self.roads_gdf is not None and not self.roads_gdf.empty:
                 line_roads_gdf = self.roads_gdf[
@@ -579,11 +806,17 @@ class CoraGUI(QMainWindow):
                 projected_buildings = self.buildings_gdf.to_crs(self.dem_crs)
                 self.map_canvas.plot_geodataframe(projected_buildings, facecolor='red', edgecolor='red', alpha=0.5, zorder=3)
 
-            QMessageBox.information(self, "Analysis Complete", f"Flood risk analysis finished for SLR {slr_value_meters:.2f}m.")
+            analysis_msg = f"Flood risk analysis finished for SLR {slr_value_meters:.2f}m"
+            if self.current_tidal_info and 'error' not in self.current_tidal_info:
+                analysis_msg += f" (with tidal baseline: {self.current_tidal_info['baseline_m']:.3f}m)"
+            
+            QMessageBox.information(self, "Analysis Complete", analysis_msg)
+            self.statusBar().showMessage("Analysis complete.", 5000)
 
         except Exception as e:
             QMessageBox.critical(self, "Analysis Error", f"An error occurred during flood analysis: {e}")
             print(f"An error occurred during flood analysis: {e}")
+            self.statusBar().showMessage("Analysis failed.", 5000)
 
     def _toggle_drawing_mode(self):
         self.is_drawing_wall = not self.is_drawing_wall

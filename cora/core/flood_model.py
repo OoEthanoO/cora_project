@@ -1,6 +1,9 @@
 import numpy as np
 import scipy.ndimage
 from cora.core.geospatial_utils import is_coastal_edge
+from cora.utils.tidal_gauge import get_tidal_baseline
+from typing import Optional, Tuple
+import logging
 
 def bathtub_inundation(dem: np.ndarray, sea_level: float) -> np.ndarray:
     if not isinstance(dem, np.ndarray):
@@ -45,6 +48,51 @@ def connected_flood(dem: np.ndarray, sea_level: float) -> np.ndarray:
     flood_mask = binary_flood_fill(ocean_seed_points, potential_flood_area)
 
     return flood_mask
+
+def connected_flood_with_tidal_baseline(
+    dem: np.ndarray, 
+    slr: float, 
+    lat: float, 
+    lon: float,
+    use_tidal_baseline: bool = True
+) -> Tuple[np.ndarray, Optional[dict]]:
+    if not isinstance(dem, np.ndarray):
+        raise TypeError("Input DEM must be a NumPy array.")
+    if dem.ndim != 2:
+        raise ValueError("Input DEM must be a 2D array.")
+    if not isinstance(slr, (int, float)):
+        raise TypeError("Sea level rise must be a numeric value.")
+    
+    tidal_info = None
+    effective_sea_level = slr
+    
+    if use_tidal_baseline:
+        try:
+            logging.info(f"Looking up tidal baseline for coordinates ({lat:.4f}, {lon:.4f})")
+            baseline, station_info = get_tidal_baseline(lat, lon)
+            
+            if baseline is not None and station_info is not None:
+                effective_sea_level = baseline + slr
+                tidal_info = {
+                    'baseline_m': baseline,
+                    'station_name': station_info['name'],
+                    'station_id': station_info['id'],
+                    'distance_km': station_info['distance_km'],
+                    'effective_sea_level': effective_sea_level
+                }
+                logging.info(f"Applied tidal baseline: {baseline:.3f}m from station {station_info['name']}")
+                logging.info(f"Effective sea level: {effective_sea_level:.3f}m (baseline + {slr:.3f}m SLR)")
+            else:
+                logging.warning("Could not retrieve tidal baseline, using SLR value directly")
+                tidal_info = {'error': 'No tidal data available'}
+                
+        except Exception as e:
+            logging.error(f"Error retrieving tidal baseline: {e}")
+            tidal_info = {'error': str(e)}
+    
+    flood_mask = connected_flood(dem, effective_sea_level)
+    
+    return flood_mask, tidal_info
 
 if __name__ == '__main__':
     print("Running manual test for bathtub_inundation...")
@@ -141,3 +189,19 @@ if __name__ == '__main__':
     print(f"Number of connected flooded cells: {np.sum(connected_flood_mask_high_edges)}")
 
     print("\nManual test for connected_flood finished.")
+    
+    print("\nTesting tidal baseline integration...")
+    test_lat, test_lon = 25.7617, -80.1918
+    test_slr = 1.0
+    
+    try:
+        flood_mask_tidal, tidal_info = connected_flood_with_tidal_baseline(
+            sample_dem_cf, test_slr, test_lat, test_lon, use_tidal_baseline=True
+        )
+        print(f"Flood analysis with tidal baseline completed.")
+        print(f"Tidal info: {tidal_info}")
+        print(f"Flooded cells: {np.sum(flood_mask_tidal)}")
+    except Exception as e:
+        print(f"Error in tidal baseline test: {e}")
+    
+    print("\nTidal baseline integration test finished.")

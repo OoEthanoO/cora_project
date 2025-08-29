@@ -5,23 +5,19 @@ from rasterio.crs import CRS
 
 
 def load_dem(tif_path: str) -> tuple[np.ndarray, Affine, CRS]:
-    """
-    Loads a Digital Elevation Model (DEM) from a GeoTIFF file.
-
-    Args:
-        tif_path (str): The file path to the GeoTIFF file.
-
-    Returns:
-        tuple[np.ndarray, Affine, CRS]: A tuple containing:
-            - The DEM data as a NumPy array.
-            - The Affine transformation object.
-            - The Coordinate Reference System (CRS) of the DEM.
-    """
     with rasterio.open(tif_path) as src:
         dem_array = src.read(1)
         transform = src.transform
         crs = src.crs
     return dem_array, transform, crs
+
+
+def generate_copernicus_dem_url(south: float, north: float, west: float, east: float, api_key: str = None) -> str:
+    base_url = "https://portal.opentopography.org/API/globaldem"
+    params = f"?demtype=COP30&south={south}&north={north}&west={west}&east={east}&outputFormat=GTiff"
+    if api_key:
+        params += f"&API_Key={api_key}"
+    return base_url + params
 
 
 if __name__ == '__main__':
