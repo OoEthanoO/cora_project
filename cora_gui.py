@@ -16,13 +16,20 @@ from matplotlib.figure import Figure
 import numpy as np
 from shapely import buffer
 from shapely.geometry import LineString
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+import tempfile
+import datetime
 
 from cora.utils.data_loader import load_dem, generate_copernicus_dem_url
 from cora.core.flood_model import connected_flood, connected_flood_with_tidal_baseline
 from cora.utils.osm_handler import fetch_osm_geometries, mark_critical_infrastructure
 from cora.analysis.impact_assessment import raster_to_vector_polygons, find_intersecting_features
 from cora.analysis.economic_impact import calculate_building_damage, format_currency
-from cora.core.adaptation import apply_sea_wall
+from cora.core.adaptation import apply_sea_wall, apply_wetland_reduction
 from cora.utils.population_data import WorldPopHandler, calculate_population_exposure
 
 class MplCanvas(FigureCanvasQTAgg):
@@ -31,6 +38,8 @@ class MplCanvas(FigureCanvasQTAgg):
         self.axes = self.fig.subplots()
         super().__init__(self.fig)
         self.setParent(parent)
+
+        self.parent_gui = parent
 
         self.axes.set_title("Map Canvas")
         self.axes.set_xlabel("X-coordinate")
@@ -63,6 +72,9 @@ class MplCanvas(FigureCanvasQTAgg):
         self.fig.tight_layout()
         self.draw()
 
+        if self.parent_gui and hasattr(self.parent_gui, '_redraw_overlays'):
+            self.parent_gui._redraw_overlays()
+
     def plot_geodataframe(self, gdf, **plot_kwargs):
         gdf.plot(ax=self.axes, **plot_kwargs)
         self.draw()
@@ -86,6 +98,11 @@ class CoraGUI(QMainWindow):
         self.sea_wall_geometry = None
         self.sea_wall_plot = None
 
+        self.is_drawing_wetland = False
+        self.wetland_points = []
+        self.wetland_geometry = None
+        self.wetland_plot = None
+
         self.scenario_combo = QComboBox()
         
         self.use_tidal_baseline = True
@@ -93,6 +110,9 @@ class CoraGUI(QMainWindow):
 
         self.population_handler = None
         self.population_data = None
+
+        self.last_analysis_results = None
+        self.last_flood_mask = None
 
         self.initUI()
 
@@ -162,6 +182,11 @@ class CoraGUI(QMainWindow):
         self.analyze_button.clicked.connect(self._run_analysis)
         dock_layout.addWidget(self.analyze_button)
 
+        self.export_report_button = QPushButton("Export PDF Report")
+        self.export_report_button.clicked.connect(self._export_pdf_report)
+        self.export_report_button.setEnabled(False)
+        dock_layout.addWidget(self.export_report_button)
+
         self.draw_wall_button = QPushButton("Draw Sea Wall")
         self.draw_wall_button.clicked.connect(self._toggle_drawing_mode)
         dock_layout.addWidget(self.draw_wall_button)
@@ -178,6 +203,14 @@ class CoraGUI(QMainWindow):
         wall_height_layout.addWidget(self.wall_height_label)
         wall_height_layout.addWidget(self.wall_height_input)
         dock_layout.addLayout(wall_height_layout)
+
+        self.draw_wetland_button = QPushButton("Draw Wetland Area")
+        self.draw_wetland_button.clicked.connect(self._toggle_wetland_drawing_mode)
+        dock_layout.addWidget(self.draw_wetland_button)
+
+        self.clear_wetland_button = QPushButton("Clear Wetland")
+        self.clear_wetland_button.clicked.connect(self._clear_wetland)
+        dock_layout.addWidget(self.clear_wetland_button)
 
         self.flooded_buildings_label = QLabel("Flooded Buildings: N/A")
         dock_layout.addWidget(self.flooded_buildings_label)
@@ -556,6 +589,30 @@ class CoraGUI(QMainWindow):
                 self.statusBar().showMessage("Sea wall drawing cancelled.", 3000)
             else:
                 return
+            
+        if self.is_drawing_wetland:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Load DEM",
+                "You are currently drawing a wetland area. Loading a new DEM will cancel the current drawing. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.is_drawing_wetland = False
+                self.draw_wetland_button.setText("Draw Wetland Area")
+                self.wetland_points = []
+                self.wetland_geometry = None
+                if self.wetland_plot:
+                    try:
+                        if self.wetland_plot[0] in self.map_canvas.axes.lines:
+                            self.wetland_plot[0].remove()
+                    except Exception:
+                        pass
+                    self.wetland_plot = None
+                self.map_canvas.draw()
+                self.statusBar().showMessage("Wetland drawing cancelled.", 3000)
+            else:
+                return
 
         data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
         start_dir = data_dir if os.path.isdir(data_dir) else os.path.expanduser("~")
@@ -640,6 +697,8 @@ class CoraGUI(QMainWindow):
         print(f"Running analysis with SLR: {slr_value_meters:.2f}m")
 
         try:
+            import pyproj
+
             dem_to_analyze = self.dem_array
             if self.sea_wall_geometry is not None and len(self.sea_wall_points) >= 2:
                 try:
@@ -654,6 +713,22 @@ class CoraGUI(QMainWindow):
                     self.dem_transform
                 )
                 print(f"Applied sea wall at height {wall_height}m.")
+
+            if self.wetland_geometry is not None and len(self.wetland_points) >= 3:
+                from shapely.ops import transform
+                from functools import partial
+
+                project = pyproj.Transformer.from_crs("EPSG:4326", self.dem_crs, always_xy=True).transform
+                wetland_projected = transform(project, self.wetland_geometry)
+
+                reduction_m = 0.15
+                dem_to_analyze = apply_wetland_reduction(
+                    dem_to_analyze,
+                    wetland_projected,
+                    reduction_m,
+                    self.dem_transform
+                )
+                print(f"Applied wetland restoration with {reduction_m}m flood reduction.")
 
             if self.use_tidal_baseline and lat is not None and lon is not None:
                 self.statusBar().showMessage("Looking up tidal gauge data...", 0)
@@ -691,6 +766,48 @@ class CoraGUI(QMainWindow):
 
             population_exposed = 0
             population_stats = {}
+
+            if lat is not None and lon is not None:
+                try:
+                    self.statusBar().showMessage("Loading population data...", 0)
+                    QApplication.processEvents()
+
+                    country = self.population_handler.estimate_country_from_coords(lat, lon)
+                    pop_data = self.population_handler.get_population_raster(country, 2020)
+
+                    if pop_data:
+                        pop_array, pop_transform, pop_crs = pop_data
+                        population_exposed, population_stats = calculate_population_exposure(
+                            flood_mask, self.dem_transform, self.dem_crs,
+                            pop_array, pop_transform, pop_crs
+                        )
+
+                        if population_exposed >= 1000:
+                            pop_text = f"{population_exposed/1000:.1f}K"
+                        else:
+                            pop_text = f"{int(population_exposed)}"
+
+                        self.population_exposed_label.setText(f"Population Exposed: {pop_text}")
+
+                        if 'exposure_percentage' in population_stats:
+                            self.population_percentage_label.setText(
+                                f"Population Exposure: {population_stats['exposure_percentage']:.1f}% of area"
+                            )
+
+                        print(f"Population exposure calculated: {population_exposed:.0f} people")
+                        print(f"Population stats: {population_stats}")
+                    
+                    else:
+                        self.population_exposed_label.setText("Population Exposed: Data unavailable")
+                        self.population_percentage_label.setText("Population Exposure: N/A")
+
+                except Exception as e:
+                    print(f"Error calculating population exposure: {e}")
+                    self.population_exposed_label.setText("Population Exposed: Error")
+                    self.population_percentage_label.setText("Population Exposure: N/A")
+            else:
+                self.population_exposed_label.setText("Population Exposed: No coordinates")
+                self.population_percentage_label.setText("Population Exposure: N/A")
                     
             height, width = self.dem_array.shape
             extent = rasterio.transform.array_bounds(height, width, self.dem_transform)
@@ -760,6 +877,12 @@ class CoraGUI(QMainWindow):
             else:
                 self.flooded_buildings_label.setText("Flooded Buildings: N/A")
                 self.economic_damage_label.setText("Economic Damage: N/A")
+                self.population_exposed_label.setText("Population Exposed: N/A")
+                self.population_percentage_label.setText("Population Exposure: N/A")
+
+            if lat is None or lon is None:
+                self.population_exposed_label.setText("Population Exposed: No coordinates")
+                self.population_percentage_label.setText("Population Exposure: N/A")
 
             if self.roads_gdf is not None and not self.roads_gdf.empty:
                 line_roads_gdf = self.roads_gdf[
@@ -809,6 +932,25 @@ class CoraGUI(QMainWindow):
             analysis_msg = f"Flood risk analysis finished for SLR {slr_value_meters:.2f}m"
             if self.current_tidal_info and 'error' not in self.current_tidal_info:
                 analysis_msg += f" (with tidal baseline: {self.current_tidal_info['baseline_m']:.3f}m)"
+
+            self.last_analysis_results = {
+                'slr_value': slr_value_meters,
+                'flooded_buildings': self.flooded_buildings_label.text(),
+                'flooded_critical': self.flooded_critical_label.text(),
+                'flooded_hospitals': self.flooded_hospitals_pct_label.text(),
+                'flooded_roads': self.flooded_roads_label.text(),
+                'economic_damage': self.economic_damage_label.text(),
+                'population_exposed': self.population_exposed_label.text(),
+                'population_percentage': self.population_percentage_label.text(),
+                'tidal_info': self.tidal_info_label.text(),
+                'dem_file': os.path.basename(self.current_dem_path) if self.current_dem_path else "Unknown",
+                'coordinates': f"{lat:.6f}, {lon:.6f}" if lat and lon else "Not specified",
+                'sea_wall_applied': self.sea_wall_geometry is not None,
+                'wetland_applied': self.wetland_geometry is not None,
+                'analysis_date': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            self.last_flood_mask = flood_mask
+            self.export_report_button.setEnabled(True)
             
             QMessageBox.information(self, "Analysis Complete", analysis_msg)
             self.statusBar().showMessage("Analysis complete.", 5000)
@@ -863,6 +1005,7 @@ class CoraGUI(QMainWindow):
                 self.map_canvas.axes.clear()
                 if self.dem_array is not None and hasattr(self, "wgs84_extent"):
                     self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
+                    self._redraw_overlays()
             self.sea_wall_plot = None
         self.map_canvas.draw()
         self.statusBar().showMessage("Sea wall cleared.", 3000)
@@ -871,6 +1014,9 @@ class CoraGUI(QMainWindow):
         if self.is_drawing_wall and event.xdata is not None and event.ydata is not None:
             self.sea_wall_points.append((event.xdata, event.ydata))
             self._update_wall_preview()
+        elif self.is_drawing_wetland and event.xdata is not None and event.ydata is not None:
+            self.wetland_points.append((event.xdata, event.ydata))
+            self._update_wetland_preview()
 
     def _update_wall_preview(self):
         if self.sea_wall_plot:
@@ -886,9 +1032,232 @@ class CoraGUI(QMainWindow):
             self.sea_wall_plot = self.map_canvas.axes.plot(x, y, color='orange', linewidth=2, marker='o', zorder=10)
         self.map_canvas.draw()
 
+    def _toggle_wetland_drawing_mode(self):
+        self.is_drawing_wetland = not self.is_drawing_wetland
+
+        if self.is_drawing_wetland:
+            self.draw_wetland_button.setText("Finish Wetland")
+            self.statusBar().showMessage("Click on the map to define wetland restoration area.")
+            self.wetland_points = []
+            self.wetland_geometry = None
+            if self.wetland_plot:
+                try:
+                    if self.wetland_plot[0] in self.map_canvas.axes.lines:
+                        self.wetland_plot[0].remove()
+                except Exception:
+                    pass
+                self.wetland_plot = None
+            self.map_canvas.draw()
+        else:
+            self.draw_wetland_button.setText("Draw Wetland Area")
+            if len(self.wetland_points) >= 3:
+                from shapely.geometry import Polygon
+                self.wetland_geometry = Polygon(self.wetland_points)
+                self.statusBar().showMessage(f"Wetland area finalized with {len(self.wetland_points)} points.", 5000)
+                print(f"Wetland geometry created: {self.wetland_geometry}")
+            else:
+                self.statusBar().showMessage("Wetland drawing cancelled (need at least 3 points).", 5000)
+                self.wetland_points = []
+                if self.wetland_plot:
+                    try:
+                        if self.wetland_plot[0] in self.map_canvas.axes.lines:
+                            self.wetland_plot[0].remove()
+                    except Exception:
+                        pass
+                    self.wetland_plot = None
+                self.map_canvas.draw()
+    
+    def _clear_wetland(self):
+        self.wetland_points = []
+        self.wetland_geometry = None
+        if self.wetland_plot:
+            try:
+                if self.wetland_plot[0] in self.map_canvas.axes.lines:
+                    self.wetland_plot[0].remove()
+            except Exception:
+                self.map_canvas.axes.clear()
+                if self.dem_array is not None and hasattr(self, "wgs84_extent"):
+                    self.map_canvas.axes.imshow(self.dem_array, cmap='gray', origin='upper', extent=self.wgs84_extent)
+                    self._redraw_overlays()
+            self.wetland_plot = None
+        self.map_canvas.draw()
+        self.statusBar().showMessage("Wetland area cleared.", 3000)
+
+    def _update_wetland_preview(self):
+        if self.wetland_plot:
+            try:
+                if self.wetland_plot[0] in self.map_canvas.axes.lines:
+                    self.wetland_plot[0].remove()
+            except Exception:
+                pass
+            self.wetland_plot = None
+
+        if len(self.wetland_points) >= 2:
+            x, y = zip(*self.wetland_points)
+            if len(self.wetland_points) >= 3:
+                x = x + (x[0],)
+                y = y + (y[0],)
+            self.wetland_plot = self.map_canvas.axes.plot(x, y, color='green', linewidth=2, marker='o', alpha=0.7, zorder=9)
+        self.map_canvas.draw()
+
     def _on_buffer_slider_changed(self, value):
         buffer_deg = value / 100.0
         self.buffer_value_label.setText(f"{buffer_deg:.2f}")
+
+    def _export_pdf_report(self):
+        if self.last_analysis_results is None:
+            QMessageBox.warning(self, "No Analysis", "Please run an analysis first before exporting a report.")
+            return
+        
+        default_filename = f"CORA_Flood_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save PDF Report",
+            default_filename,
+            "PDF Files (*.pdf);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            self.statusBar().showMessage("Generating PDF report...", 0)
+            QApplication.processEvents()
+
+            doc = SimpleDocTemplate(file_path, pagesize=letter)
+            styles = getSampleStyleSheet()
+            story = []
+
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                spaceAfter=30,
+                alignment=1
+            )
+            story.append(Paragraph("CORA Flood Risk Analysis Report", title_style))
+            story.append(Spacer(1, 20))
+
+            story.append(Paragraph("Analysis Summary", styles['Heading2']))
+
+            summary_data = [
+                ["Analysis Date", self.last_analysis_results['analysis_date']],
+                ["DEM File", self.last_analysis_results['dem_file']],
+                ["Coordinates", self.last_analysis_results['coordinates']],
+                ["Sea Level Rise", f"{self.last_analysis_results['slr_value']:.2f}m"],
+                ["Sea Wall Applied", "Yes" if self.last_analysis_results['sea_wall_applied'] else "No"],
+            ]
+
+            if self.current_tidal_info and 'error' not in self.current_tidal_info:
+                summary_data.append(["Tidal Baseline", f"{self.current_tidal_info['baseline_m']:.3f}m"])
+                summary_data.append(["Tidal Station", self.current_tidal_info['station_name']])
+
+            summary_table = Table(summary_data, colWidths=[2*inch, 3*inch])
+            summary_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+                ('BACKGROUND', (1, 0), (1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(summary_table)
+            story.append(Spacer(1, 20))
+
+            story.append(Paragraph("Impact Assessment Results", styles['Heading2']))
+
+            impact_data = [
+                ["Metric", "Result"],
+                ["Flooded Buildings", self.last_analysis_results['flooded_buildings'].replace("Flooded Buildings: ", "")],
+                ["Critical Infrastructure", self.last_analysis_results['flooded_critical'].replace("Flooded Critical Infra: ", "")],
+                ["Hospitals Affected", self.last_analysis_results['flooded_hospitals'].replace("Flooded Hospitals: ", "")],
+                ["Roads Flooded", self.last_analysis_results['flooded_roads'].replace("Flooded Roads (km): ", "")],
+                ["Economic Damage", self.last_analysis_results['economic_damage'].replace("Economic Damage: ", "")],
+                ["Population Exposed", self.last_analysis_results['population_exposed'].replace("Population Exposed: ", "")],
+            ]
+
+            impact_table = Table(impact_data, colWidths=[2.5*inch, 2.5*inch])
+            impact_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(impact_table)
+            story.append(Spacer(1, 20))
+
+            if self.last_flood_mask is not None:
+                story.append(Paragraph("Flood Inundation Map", styles['Heading2']))
+                
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp_file:
+                    import matplotlib.pyplot as plt
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    
+                    im = ax.imshow(self.last_flood_mask, cmap='Blues', origin='upper', 
+                                 extent=self.wgs84_extent if hasattr(self, 'wgs84_extent') else None)
+                    ax.set_title("Flood Inundation Map")
+                    ax.set_xlabel("Longitude")
+                    ax.set_ylabel("Latitude")
+
+                    cbar = plt.colorbar(im, ax=ax)
+                    cbar.set_label("Flood Status (1=Flooded, 0=Dry)")
+
+                    plt.tight_layout()
+                    plt.savefig(tmp_file.name, dpi=150, bbox_inches='tight')
+                    plt.close()
+
+                    img = Image(tmp_file.name, width=6*inch, height=4.5*inch)
+                    story.append(img)
+
+            story.append(Spacer(1, 20))
+
+            story.append(Paragraph("Methodology", styles['Heading2']))
+            methodology_text = """
+            This analysis was performed using the Coastal Risk Analyzer (CORA) tool. 
+            The flood modeling uses a connected flood algorithm that considers topographic 
+            connectivity to determine inundation areas. Economic damage estimates are based 
+            on building footprints and standardized damage factors. Population exposure 
+            calculations utilize WorldPop demographic data where available.
+            """
+            story.append(Paragraph(methodology_text, styles['Normal']))
+
+            story.append(Spacer(1, 20))
+            story.append(Paragraph(f"Report generated by CORA v0.4.0 on {datetime.datetime.now().strftime('%Y-%m-%d at %H:%M:%S')}", 
+                                 styles['Italic']))
+
+            doc.build(story)
+
+            self.statusBar().showMessage("PDF report exported successfully.", 5000)
+            QMessageBox.information(self, "Export Complete", f"PDF report saved to:\n{file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export PDF report: {e}")
+            self.statusBar().showMessage("Export failed.", 5000)
+            print(f"PDF export error: {e}")
+
+    def _redraw_overlays(self):
+        self.sea_wall_plot = None
+        self.wetland_plot = None
+
+        if len(self.sea_wall_points) >= 2:
+            x, y = zip(*self.sea_wall_points)
+            self.sea_wall_plot = self.map_canvas.axes.plot(x, y, color='orange', linewidth=2, marker='o', zorder=10)
+
+        if len(self.wetland_points) >= 2:
+            x, y = zip(*self.wetland_points)
+            if len(self.wetland_points) >= 3 and self.wetland_geometry is not None:
+                x = x + (x[0],)
+                y = y + (y[0],)
+            self.wetland_plot = self.map_canvas.axes.plot(x, y, color='green', linewidth=2, marker='o', alpha=0.7, zorder=9)
+
+        self.map_canvas.draw()
 
 def main():
     app = QApplication(sys.argv)

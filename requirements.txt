@@ -1,0 +1,11 @@
+numpy
+rasterio
+matplotlib
+PyQt6
+osmnx
+rtree
+geopandas
+requests
+pyproj
+shapely
+reportlab

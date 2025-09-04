@@ -37,3 +37,29 @@ def apply_sea_wall(
         modified_dem[rows, cols] = new_elevations
 
     return modified_dem
+
+def apply_wetland_reduction(
+    dem: np.ndarray,
+    wetland_polygon,
+    reduction_factor: float,
+    transform: Affine
+) -> np.ndarray:
+    from rasterio import features
+    
+    modified_dem = dem.copy()
+
+    wetland_mask = features.rasterize(
+        [wetland_polygon],
+        out_shape=dem.shape,
+        transform=transform,
+        fill=0,
+        default_value=1,
+        dtype=np.uint8
+    )
+
+    wetland_pixels = wetland_mask == 1
+    if np.any(wetland_pixels):
+        elevation_boost = reduction_factor
+        modified_dem[wetland_pixels] += elevation_boost
+
+    return modified_dem
