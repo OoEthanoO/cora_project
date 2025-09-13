@@ -1,6 +1,16 @@
-# Coastal Risk Analyzer (CORA) - v0.4.0
+# Coastal Risk Analyzer (CORA) - v0.5.0
 
-CORA (Coastal Risk Analyzer) v0.4.0 introduces improved user experience for sea wall drawing and DEM loading. If a user attempts to load a new DEM file while drawing a sea wall, the GUI now prompts for confirmation and cancels the current drawing if confirmed, or continues drawing if cancelled. This version also includes bug fixes for sea wall preview removal and drawing mode transitions.
+CORA (Coastal Risk Analyzer) v0.5.0 introduces comprehensive population exposure analysis, wetland restoration modeling, tidal gauge integration, and professional PDF reporting capabilities. This major release significantly enhances CORA's ability to assess climate adaptation strategies and provide detailed impact assessments for coastal communities.
+
+## Key Features in v0.5.0
+
+- **Population Exposure Analysis:** Integration with WorldPop demographic data to calculate exposed population counts and percentages during flood events. Supports automatic country detection and population raster processing.
+- **Tidal Gauge Integration:** Real-time integration with NOAA tidal gauge stations to establish accurate sea level baselines. Automatically finds the nearest tidal station and applies measured mean sea level data for more accurate flood modeling.
+- **Wetland Restoration Modeling:** Interactive wetland area drawing tool that simulates flood reduction benefits of wetland restoration projects. Users can draw wetland polygons and apply configurable flood reduction factors.
+- **Professional PDF Reports:** Comprehensive PDF report generation including analysis summaries, impact metrics, flood maps, methodology descriptions, and adaptation strategy details.
+- **Enhanced Adaptation Strategies:** Improved sea wall drawing with configurable heights and wetland restoration areas with flood reduction modeling.
+- **Advanced Flood Modeling:** Connected flood algorithm with tidal baseline integration for more accurate coastal inundation predictions.
+- **Economic Impact Assessment:** Detailed building damage calculations with standardized property values and depth-damage functions.
 
 ## Key Features in v0.4.0
 
@@ -26,7 +36,7 @@ CORA (Coastal Risk Analyzer) v0.4.0 introduces improved user experience for sea 
 Ensure you have Python installed. Then, install the necessary dependencies:
 
 ```bash
-pip install numpy rasterio matplotlib PyQt6 osmnx rtree geopandas
+pip install numpy rasterio matplotlib PyQt6 osmnx rtree geopandas requests pyproj shapely reportlab
 ```
 
 ## Running the GUI
@@ -36,6 +46,15 @@ To launch the CORA GUI, run the `cora_gui.py` script:
 ```bash
 python cora_gui.py
 ```
+
+### GUI Features
+
+- **DEM Management:** Load local DEM files or download Copernicus DEM data directly (requires OpenTopography API key)
+- **Interactive Analysis:** Set coordinates, buffer zones, and sea level rise scenarios
+- **Infrastructure Loading:** Fetch and display buildings and roads from OpenStreetMap
+- **Adaptation Planning:** Draw sea walls and wetland restoration areas
+- **Real-time Results:** View population exposure, economic damage, and infrastructure impacts
+- **Professional Reporting:** Export comprehensive PDF reports with maps and analysis results
 
 ## Using the CLI (Legacy Bathtub Model)
 
@@ -50,3 +69,24 @@ For more CLI options, use:
 ```bash
 python run_cora.py --help
 ```
+
+## New in v0.5.0: Advanced Capabilities
+
+### Population Exposure Analysis
+CORA now automatically downloads and processes WorldPop demographic data to calculate population exposure during flood events. The system provides both absolute numbers and percentage exposure metrics.
+
+### Tidal Baseline Integration
+Real-time integration with NOAA tidal gauge stations ensures flood models use accurate local sea level baselines rather than generic elevations, significantly improving prediction accuracy for coastal areas.
+
+### Adaptation Strategy Modeling
+- **Sea Walls:** Draw custom sea wall alignments with configurable heights to test coastal protection effectiveness
+- **Wetland Restoration:** Model the flood reduction benefits of wetland restoration projects with evidence-based reduction factors
+
+### Professional Reporting
+Generate comprehensive PDF reports including:
+- Analysis parameters and methodology
+- Infrastructure impact summaries
+- Economic damage assessments
+- Population exposure statistics
+- High-resolution flood inundation maps
+- Adaptation strategy effectiveness
