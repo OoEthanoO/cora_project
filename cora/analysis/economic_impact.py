@@ -124,15 +124,57 @@ def format_currency(amount: float) -> str:
     else:
         return f"${amount:.0f}"
     
+def calculate_relocation_costs(
+    flooded_buildings_gdf: gpd.GeoDataFrame,
+    property_values: Dict[str, float] = None,
+    relocation_multiplier: float = 1.2
+) -> Tuple[float, Dict[str, float]]:
+    if flooded_buildings_gdf is None or flooded_buildings_gdf.empty:
+        return 0.0, {}
+    
+    if property_values is None:
+        property_values = DEFAULT_PROPERTY_VALUES
+
+    total_relocation_cost = 0.0
+    costs_by_type = {}
+
+    buildings_for_calc = flooded_buildings_gdf.copy()
+    if buildings_for_calc.crs and buildings_for_calc.crs.is_geographic:
+        try:
+            centroid = buildings_for_calc.unary_union.centroid
+            utm_zone = int((centroid.x + 180) / 6) + 1
+            hemisphere = 'north' if centroid.y >= 0 else 'south'
+            utm_crs = f"EPSG:{32600 + utm_zone if hemisphere == 'north' else 32700 + utm_zone}"
+            buildings_for_calc = buildings_for_calc.to_crs(utm_crs)
+        except:
+            pass
+
+    for idx, building in buildings_for_calc.iterrows():
+        building_type = classify_building_type(building)
+        building_area = estimate_building_area(building.geometry)
+        value_per_m2 = property_values.get(building_type, property_values['default'])
+
+        replacement_value = building_area * value_per_m2
+
+        relocation_cost = replacement_value * relocation_multiplier
+
+        total_relocation_cost += relocation_cost
+
+        if building_type not in costs_by_type:
+            costs_by_type[building_type] = 0.0
+        costs_by_type[building_type] += relocation_cost
+
+    return total_relocation_cost, costs_by_type
+
 if __name__ == "__main__":
     print("Testing economic impact estimation...")
 
-    test_builiding = {
+    test_building = {
         'building': 'residential',
         'amenity': None,
         'shop': None
     }
-    building_type = classify_building_type(test_builiding)
+    building_type = classify_building_type(test_building)
     print(f"Building type: {building_type}")
 
     damage_factor = estimate_flood_damage_factor(1.0)

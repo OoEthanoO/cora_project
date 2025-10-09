@@ -6,7 +6,7 @@ import requests
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QDockWidget, QSlider, QMessageBox,
-    QFileDialog, QComboBox, QCheckBox, QTextEdit
+    QFileDialog, QComboBox, QCheckBox, QScrollArea
 )
 from PyQt6.QtCore import Qt
 import pyproj
@@ -28,7 +28,7 @@ from cora.utils.data_loader import load_dem, generate_copernicus_dem_url
 from cora.core.flood_model import connected_flood, connected_flood_with_tidal_baseline
 from cora.utils.osm_handler import fetch_osm_geometries, mark_critical_infrastructure
 from cora.analysis.impact_assessment import raster_to_vector_polygons, find_intersecting_features
-from cora.analysis.economic_impact import calculate_building_damage, format_currency
+from cora.analysis.economic_impact import calculate_building_damage, format_currency, calculate_relocation_costs
 from cora.core.adaptation import apply_sea_wall, apply_wetland_reduction
 from cora.utils.population_data import WorldPopHandler, calculate_population_exposure
 
@@ -114,6 +114,8 @@ class CoraGUI(QMainWindow):
         self.last_analysis_results = None
         self.last_flood_mask = None
 
+        self.last_flooded_buildings = None
+
         self.initUI()
 
     def initUI(self):
@@ -130,6 +132,11 @@ class CoraGUI(QMainWindow):
 
         self.controls_dock = QDockWidget("Controls", self)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.controls_dock)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         dock_widget_content = QWidget()
         dock_layout = QVBoxLayout(dock_widget_content)
@@ -228,6 +235,15 @@ class CoraGUI(QMainWindow):
         self.economic_damage_label.setStyleSheet("font-weight: bold; color: #d32f2f;")
         dock_layout.addWidget(self.economic_damage_label)
 
+        self.relocation_cost_label = QLabel("Relocation Cost: N/A")
+        self.relocation_cost_label.setStyleSheet("font-weight: bold; color: #ff9800;")
+        dock_layout.addWidget(self.relocation_cost_label)
+
+        self.calculate_relocation_button = QPushButton("Calculate Relocation Costs")
+        self.calculate_relocation_button.clicked.connect(self._calculate_relocation_costs)
+        self.calculate_relocation_button.setEnabled(False)
+        dock_layout.addWidget(self.calculate_relocation_button)
+
         self.population_exposed_label = QLabel("Population Exposed: N/A")
         self.population_exposed_label.setStyleSheet("font-weight: bold; color: #1976d2;")
         dock_layout.addWidget(self.population_exposed_label)
@@ -300,7 +316,10 @@ class CoraGUI(QMainWindow):
         dock_layout.addLayout(scenario_layout)
 
         dock_layout.addStretch(1)
-        self.controls_dock.setWidget(dock_widget_content)
+
+        scroll_area.setWidget(dock_widget_content)
+
+        self.controls_dock.setWidget(scroll_area)
 
     def _on_tidal_checkbox_changed(self, state):
         self.use_tidal_baseline = state == Qt.CheckState.Checked.value
@@ -870,15 +889,22 @@ class CoraGUI(QMainWindow):
                         print(f"Error calculating economic damage: {e}")
                         self.economic_damage_label.setText("Economic Damage: Error")
 
+                    self.last_flooded_buildings = flooded_buildings_gdf
+                    self.calculate_relocation_button.setEnabled(True)
+
                 else:
                     print("No polygonal buildings to analyze for flooding.")
                     self.flooded_buildings_label.setText("Flooded Buildings: N/A")
                     self.economic_damage_label.setText("Economic Damage: N/A")
+                    self.last_flooded_buildings = None
+                    self.calculate_relocation_button.setEnabled(False)
             else:
                 self.flooded_buildings_label.setText("Flooded Buildings: N/A")
                 self.economic_damage_label.setText("Economic Damage: N/A")
                 self.population_exposed_label.setText("Population Exposed: N/A")
                 self.population_percentage_label.setText("Population Exposure: N/A")
+                self.last_flooded_buildings = None
+                self.calculate_relocation_button.setEnabled(False)
 
             if lat is None or lon is None:
                 self.population_exposed_label.setText("Population Exposed: No coordinates")
@@ -950,6 +976,9 @@ class CoraGUI(QMainWindow):
                 'analysis_date': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             self.last_flood_mask = flood_mask
+            
+            self.relocation_cost_label.setText("Relocation Cost: N/A")
+            
             self.export_report_button.setEnabled(True)
             
             QMessageBox.information(self, "Analysis Complete", analysis_msg)
@@ -1178,6 +1207,9 @@ class CoraGUI(QMainWindow):
                 ["Population Exposed", self.last_analysis_results['population_exposed'].replace("Population Exposed: ", "")],
             ]
 
+            if 'relocation_cost' in self.last_analysis_results:
+                impact_data.append(["Relocation Cost", self.last_analysis_results['relocation_cost']])
+
             impact_table = Table(impact_data, colWidths=[2.5*inch, 2.5*inch])
             impact_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
@@ -1241,6 +1273,42 @@ class CoraGUI(QMainWindow):
             QMessageBox.critical(self, "Export Error", f"Failed to export PDF report: {e}")
             self.statusBar().showMessage("Export failed.", 5000)
             print(f"PDF export error: {e}")
+
+    def _calculate_relocation_costs(self):
+        if self.last_flooded_buildings is None or self.last_flooded_buildings.empty:
+            QMessageBox.warning(self, "No Data", "No flooded buildings data available. Please run flood analysis first.")
+            return
+    
+        try:
+            self.statusBar().showMessage("Calculating relocation costs...", 3000)
+            
+            total_relocation_cost, costs_by_type = calculate_relocation_costs(
+                self.last_flooded_buildings,
+                relocation_multiplier=1.2
+            )
+
+            relocation_text = format_currency(total_relocation_cost)
+            self.relocation_cost_label.setText(f"Relocation Cost: {relocation_text}")
+
+            if self.last_analysis_results:
+                self.last_analysis_results['relocation_cost'] = relocation_text
+                self.last_analysis_results['relocation_cost_by_type'] = costs_by_type
+
+            print(f"Relocation costs calculated: {relocation_text}")
+            print(f"Costs by building type: {costs_by_type}")
+
+            breakdown_text = "Relocation Cost Breakdown:\n\n"
+            for building_type, cost in costs_by_type.items():
+                breakdown_text += f"{building_type.title()}: {format_currency(cost)}\n"
+            breakdown_text += f"\nTotal: {relocation_text}"
+            breakdown_text += "\n\nNote: Costs include 20% premium for relocation logistics (land acquisition, moving expenses, temporary housing)."
+            
+            QMessageBox.information(self, "Relocation Costs", breakdown_text)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Calculation Error", f"Failed to calculate relocation costs: {e}")
+            self.relocation_cost_label.setText("Relocation Cost: Error")
+            print(f"Error calculating relocation costs: {e}")
 
     def _redraw_overlays(self):
         self.sea_wall_plot = None

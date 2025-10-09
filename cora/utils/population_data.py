@@ -26,13 +26,11 @@ class WorldPopHandler:
                     transform = src.transform
                     crs = src.crs
                     
-                    # Add validation for population data
                     print(f"DEBUG: Loaded population data - shape: {data.shape}, dtype: {data.dtype}")
                     print(f"DEBUG: Population data min/max: {np.min(data):.2f} / {np.max(data):.2f}")
                     print(f"DEBUG: Population data has negative values: {np.any(data < 0)}")
                     print(f"DEBUG: Population data has NaN values: {np.isnan(data).any()}")
                     
-                    # Clean the data - population should never be negative
                     if np.any(data < 0):
                         print("WARNING: Found negative population values, setting to 0")
                         data = np.where(data < 0, 0, data)
@@ -95,7 +93,6 @@ def calculate_population_exposure(
         print(f"DEBUG: Population array has NaN values: {np.isnan(population_array).any()}")
         print(f"DEBUG: Flood mask shape: {flood_mask.shape}, dtype: {flood_mask.dtype}")
         print(f"DEBUG: Flood mask sum (flooded cells): {np.sum(flood_mask)}")
-        
         print(f"DEBUG: Population CRS: {population_crs}")
         print(f"DEBUG: Flood CRS: {flood_crs}")
         print(f"DEBUG: Population transform: {population_transform}")
@@ -118,41 +115,28 @@ def calculate_population_exposure(
             src_crs=population_crs,
             dst_transform=flood_transform,
             dst_crs=flood_crs,
-            resampling=Resampling.bilinear
+            resampling=Resampling.sum
         )
 
-        print(f"DEBUG: Reprojected population shape: {pop_reprojected}, dtype: {pop_reprojected.dtype}")
+        print(f"DEBUG: Reprojected population shape: {pop_reprojected.shape}, dtype: {pop_reprojected.dtype}")
         print(f"DEBUG: Reprojected population min/max: {np.min(pop_reprojected):.2f} / {np.max(pop_reprojected):.2f}")
         print(f"DEBUG: Reprojected population has NaN values: {np.isnan(pop_reprojected).any()}")
         
-        # Check if there's any overlap by trying nearest neighbor resampling as well
-        pop_reprojected_nn = np.zeros_like(flood_mask, dtype=np.float32)
-        reproject(
-            source=population_array,
-            destination=pop_reprojected_nn,
-            src_transform=population_transform,
-            src_crs=population_crs,
-            dst_transform=flood_transform,
-            dst_crs=flood_crs,
-            resampling=Resampling.nearest
-        )
-        print(f"DEBUG: Nearest neighbor reprojection min/max: {np.min(pop_reprojected_nn):.2f} / {np.max(pop_reprojected_nn):.2f}")
-        
-        # Use the better result
-        if np.max(pop_reprojected_nn) > np.max(pop_reprojected):
-            print("DEBUG: Using nearest neighbor result as it has non-zero values")
-            pop_reprojected = pop_reprojected_nn
-
-        # Handle NaN values in reprojected data
         pop_reprojected = np.nan_to_num(pop_reprojected, nan=0.0, posinf=0.0, neginf=0.0)
+
+        pop_reprojected = np.maximum(pop_reprojected, 0.0)
+
         print(f"DEBUG: After nan_to_num - min/max: {np.min(pop_reprojected):.2f} / {np.max(pop_reprojected):.2f}")
 
         exposed_population = pop_reprojected * flood_mask.astype(np.float32)
         total_exposed = np.sum(exposed_population)
 
-        total_population_in_area = np.sum(pop_reprojected)
+        valid_pop_mask = pop_reprojected > 0
+        total_population_in_area = np.sum(pop_reprojected[valid_pop_mask])
+
         print(f"DEBUG: Total exposed: {total_exposed:.2f}")
-        print(f"DEBUG: Total in area: {total_population_in_area:.2f}")
+        print(f"DEBUG: Total in area (valid cells only): {total_population_in_area:.2f}")
+        print(f"DEBUG: Valid population cells: {np.sum(valid_pop_mask)}")
 
         total_exposed = max(0.0, float(total_exposed))
         total_population_in_area = max(0.0, float(total_population_in_area))
