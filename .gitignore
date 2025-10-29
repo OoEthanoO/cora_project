@@ -3,3 +3,5 @@ full_project_details.md
 cache/
 __pycache__/
 .venv/
+dist/
+build/
