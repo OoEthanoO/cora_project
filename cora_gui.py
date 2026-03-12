@@ -23,6 +23,7 @@ from reportlab.lib.units import inch
 from reportlab.lib import colors
 import tempfile
 import datetime
+import json
 
 from cora.utils.data_loader import load_dem, generate_copernicus_dem_url
 from cora.core.flood_model import connected_flood, connected_flood_with_tidal_baseline
@@ -116,6 +117,9 @@ class CoraGUI(QMainWindow):
 
         self.last_flooded_buildings = None
 
+        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        self.config = self._load_config()
+
         self.initUI()
 
     def initUI(self):
@@ -154,6 +158,8 @@ class CoraGUI(QMainWindow):
         self.api_key_input = QLineEdit()
         self.api_key_input.setPlaceholderText("OpenTopography API Key (required)")
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_input.setText(self.config.get("api_key", ""))
+        self.api_key_input.textChanged.connect(self._save_config)
         api_key_layout.addWidget(self.api_key_label)
         api_key_layout.addWidget(self.api_key_input)
         dock_layout.addLayout(api_key_layout)
@@ -320,6 +326,23 @@ class CoraGUI(QMainWindow):
         scroll_area.setWidget(dock_widget_content)
 
         self.controls_dock.setWidget(scroll_area)
+
+    def _load_config(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading config: {e}")
+        return {}
+
+    def _save_config(self):
+        self.config["api_key"] = self.api_key_input.text().strip()
+        try:
+            with open(self.config_path, 'w') as f:
+                json.dump(self.config, f, indent=4)
+        except Exception as e:
+            print(f"Error saving config: {e}")
 
     def _on_tidal_checkbox_changed(self, state):
         self.use_tidal_baseline = state == Qt.CheckState.Checked.value
@@ -901,8 +924,6 @@ class CoraGUI(QMainWindow):
             else:
                 self.flooded_buildings_label.setText("Flooded Buildings: N/A")
                 self.economic_damage_label.setText("Economic Damage: N/A")
-                self.population_exposed_label.setText("Population Exposed: N/A")
-                self.population_percentage_label.setText("Population Exposure: N/A")
                 self.last_flooded_buildings = None
                 self.calculate_relocation_button.setEnabled(False)
 

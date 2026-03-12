@@ -98,6 +98,8 @@ def calculate_population_exposure(
         print(f"DEBUG: Population transform: {population_transform}")
         print(f"DEBUG: Flood transform: {flood_transform}")
         
+        from rasterio.warp import calculate_default_transform
+
         pop_height, pop_width = population_array.shape
         pop_bounds = rasterio.transform.array_bounds(pop_height, pop_width, population_transform)
         print(f"DEBUG: Population bounds: {pop_bounds}")
@@ -115,15 +117,24 @@ def calculate_population_exposure(
             src_crs=population_crs,
             dst_transform=flood_transform,
             dst_crs=flood_crs,
-            resampling=Resampling.sum
+            resampling=Resampling.bilinear
         )
+
+        src_res_x = abs(population_transform.a)
+        src_res_y = abs(population_transform.e)
+        dst_res_x = abs(flood_transform.a)
+        dst_res_y = abs(flood_transform.e)
+        
+        area_ratio = (dst_res_x * dst_res_y) / (src_res_x * src_res_y)
+        print(f"DEBUG: Upsampling area ratio (dest/source): {area_ratio:.6f}")
+        
+        pop_reprojected *= area_ratio
 
         print(f"DEBUG: Reprojected population shape: {pop_reprojected.shape}, dtype: {pop_reprojected.dtype}")
         print(f"DEBUG: Reprojected population min/max: {np.min(pop_reprojected):.2f} / {np.max(pop_reprojected):.2f}")
         print(f"DEBUG: Reprojected population has NaN values: {np.isnan(pop_reprojected).any()}")
         
         pop_reprojected = np.nan_to_num(pop_reprojected, nan=0.0, posinf=0.0, neginf=0.0)
-
         pop_reprojected = np.maximum(pop_reprojected, 0.0)
 
         print(f"DEBUG: After nan_to_num - min/max: {np.min(pop_reprojected):.2f} / {np.max(pop_reprojected):.2f}")
@@ -132,11 +143,10 @@ def calculate_population_exposure(
         total_exposed = np.sum(exposed_population)
 
         valid_pop_mask = pop_reprojected > 0
-        total_population_in_area = np.sum(pop_reprojected[valid_pop_mask])
+        total_population_in_area = np.sum(pop_reprojected)
 
         print(f"DEBUG: Total exposed: {total_exposed:.2f}")
-        print(f"DEBUG: Total in area (valid cells only): {total_population_in_area:.2f}")
-        print(f"DEBUG: Valid population cells: {np.sum(valid_pop_mask)}")
+        print(f"DEBUG: Total in area: {total_population_in_area:.2f}")
 
         total_exposed = max(0.0, float(total_exposed))
         total_population_in_area = max(0.0, float(total_population_in_area))
