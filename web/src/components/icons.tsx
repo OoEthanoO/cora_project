@@ -76,6 +76,16 @@ export function ReportIcon({ className }: IconProps) {
   );
 }
 
+export function MedalIcon({ className }: IconProps) {
+  return (
+    <svg {...base} className={className}>
+      <path d="M8.5 3H5l3.5 6M15.5 3H19l-3.5 6" />
+      <circle cx="12" cy="15" r="6" />
+      <path d="m12 12.2 1 2.05 2.25.33-1.62 1.58.38 2.24L12 17.34l-2.01 1.06.38-2.24-1.62-1.58 2.25-.33L12 12.2Z" />
+    </svg>
+  );
+}
+
 export function CheckIcon({ className }: IconProps) {
   return (
     <svg {...base} className={className}>

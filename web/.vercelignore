@@ -1,0 +1,4 @@
+# The installer is served from GitHub Releases via NEXT_PUBLIC_DOWNLOAD_URL,
+# not from this deployment. Uploading it would exceed Vercel's 100 MB static
+# file limit (Hobby) and waste bandwidth.
+public/downloads

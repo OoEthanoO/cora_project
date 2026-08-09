@@ -2,6 +2,7 @@ import Image from "next/image";
 import { repoUrl } from "@/lib/release";
 
 const links = [
+  { href: "#recognition", label: "Recognition" },
   { href: "#features", label: "Features" },
   { href: "#workflow", label: "How it works" },
   { href: "#download", label: "Download" },

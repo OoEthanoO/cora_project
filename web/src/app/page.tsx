@@ -1,3 +1,4 @@
+import { Awards } from "@/components/Awards";
 import { CaseStudy } from "@/components/CaseStudy";
 import { Download } from "@/components/Download";
 import { Features } from "@/components/Features";
@@ -13,6 +14,7 @@ export default function Page() {
       <main>
         <Hero />
         <CaseStudy />
+        <Awards />
         <Features />
         <Workflow />
         <Download />
