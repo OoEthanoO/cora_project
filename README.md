@@ -39,6 +39,25 @@ Ensure you have Python installed. Then, install the necessary dependencies:
 pip install numpy rasterio matplotlib PyQt6 osmnx rtree geopandas requests pyproj shapely reportlab
 ```
 
+### OpenTopography API key
+
+Downloading Copernicus DEM data from inside CORA requires a free
+[OpenTopography API key](https://portal.opentopography.org). Everything else —
+loading local GeoTIFFs, OpenStreetMap data, tidal gauges, population exposure —
+works without one.
+
+Enter the key in the app's **API Key** field and it is saved for next time.
+Copy the template to create the file up front if you prefer:
+
+```bash
+cp config.example.json config.json
+```
+
+`config.json` holds your personal key and is deliberately **not** tracked by
+git — keep it out of commits, and never share it in issues or screenshots. In
+the bundled macOS app the same file lives in
+`~/Library/Application Support/CORA` instead.
+
 ## Building the macOS Installer
 
 To produce a standalone `CORA.app` and a `.dmg` installer:
