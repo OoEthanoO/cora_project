@@ -2,7 +2,14 @@
 import sys
 import os
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
 block_cipher = None
+
+_version_ns = {}
+with open(os.path.join(os.getcwd(), 'cora', '_version.py')) as _vf:
+    exec(_vf.read(), _version_ns)
+VERSION = _version_ns['__version__']
 
 def get_pkg_metadata_path(package_name):
     """Get the path to package metadata"""
@@ -19,10 +26,17 @@ datas = [
     ('cora', 'cora'),
 ]
 
-for pkg in ['osmnx', 'geopandas', 'networkx', 'shapely', 'rasterio', 'pyproj', 'fiona']:
+for pkg in ['osmnx', 'geopandas', 'networkx', 'shapely', 'rasterio', 'pyproj', 'pyogrio']:
     metadata = get_pkg_metadata_path(pkg)
     if metadata:
         datas.append(metadata)
+
+# rasterio has no PyInstaller hook: its Cython modules import submodules
+# dynamically, and its bundled GDAL/PROJ data must ship with the app.
+collected_hiddenimports = []
+for pkg in ['rasterio', 'pyogrio', 'osmnx', 'geopandas', 'pyproj']:
+    collected_hiddenimports += collect_submodules(pkg)
+    datas += collect_data_files(pkg)
 
 a = Analysis(
     ['cora_gui.py'],
@@ -54,8 +68,8 @@ a = Analysis(
         'geopandas.datasets',
         'shapely',
         'shapely.geometry',
-        'fiona',
-        'fiona.schema',
+        'pyogrio',
+        'pyogrio._geometry',
         'pyproj',
         'pyproj.datadir',
         
@@ -80,10 +94,10 @@ a = Analysis(
         
         'pkg_resources',
         'pkg_resources.py2_warn',
-    ],
+    ] + collected_hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['pyi_rth_gdal_data.py'],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -103,7 +117,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -128,10 +142,17 @@ if sys.platform == 'darwin':
         coll,
         name='CORA.app',
         icon='icon.icns',
-        bundle_identifier='com.yourcompany.cora',
+        bundle_identifier='org.cora.coastal-risk-analyzer',
+        version=VERSION,
         info_plist={
             'NSPrincipalClass': 'NSApplication',
             'NSHighResolutionCapable': 'True',
             'LSBackgroundOnly': False,
+            'CFBundleName': 'CORA',
+            'CFBundleDisplayName': 'CORA - Coastal Risk Analyzer',
+            'CFBundleShortVersionString': VERSION,
+            'CFBundleVersion': VERSION,
+            'LSMinimumSystemVersion': '11.0',
+            'NSHumanReadableCopyright': 'Coastal Risk Analyzer (CORA)',
         },
     )

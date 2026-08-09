@@ -39,6 +39,37 @@ Ensure you have Python installed. Then, install the necessary dependencies:
 pip install numpy rasterio matplotlib PyQt6 osmnx rtree geopandas requests pyproj shapely reportlab
 ```
 
+## Building the macOS Installer
+
+To produce a standalone `CORA.app` and a `.dmg` installer:
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/pip install -r requirements.txt pyinstaller
+./build_macos.sh
+```
+
+The disk image is written to `dist/CORA-<version>.dmg`. Pass `--skip-app` to
+repackage an existing `dist/CORA.app` without rebuilding it.
+
+The build is ad-hoc signed rather than signed with an Apple Developer ID, so
+the first launch requires right-click → **Open** to get past Gatekeeper. The
+bundled app stores its settings, DEM downloads and caches in
+`~/Library/Application Support/CORA`; running from a source checkout keeps
+using the project directory as before.
+
+## Website
+
+The download and presentation site lives in [`web/`](web/) and is a static
+Next.js app. After building the installer, stage it for the site with:
+
+```bash
+cd web && npm install && npm run stage-release && npm run dev
+```
+
+See [`web/README.md`](web/README.md) for deployment and for how to point the
+download button at a hosted release asset.
+
 ## Running the GUI
 
 To launch the CORA GUI, run the `cora_gui.py` script:

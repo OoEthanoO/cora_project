@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+@theme {
+  --color-abyss: #030814;
+  --color-deep: #061223;
+  --color-surface: #0b1b30;
+  --color-line: #16293f;
+
+  --color-tide: #2f9bff;
+  --color-tide-bright: #6fbcff;
+  --color-shoal: #2fd4c4;
+  --color-warn: #ff9a54;
+
+  --color-ink: #eaf2fb;
+  --color-muted: #93a7bf;
+  --color-faint: #647d99;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-code), ui-monospace, SFMono-Regular, monospace;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+  background-color: var(--color-abyss);
+}
+
+body {
+  background-color: var(--color-abyss);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Faint bathymetric contour wash used behind the hero. */
+.contours {
+  background-image:
+    radial-gradient(
+      ellipse 120% 80% at 50% -10%,
+      rgba(47, 155, 255, 0.18),
+      transparent 60%
+    ),
+    repeating-radial-gradient(
+      circle at 50% 120%,
+      transparent 0,
+      transparent 38px,
+      rgba(47, 155, 255, 0.055) 38px,
+      rgba(47, 155, 255, 0.055) 39px
+    );
+}
+
+.grid-lines {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 75%);
+}

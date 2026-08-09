@@ -32,6 +32,7 @@ from cora.analysis.impact_assessment import raster_to_vector_polygons, find_inte
 from cora.analysis.economic_impact import calculate_building_damage, format_currency, calculate_relocation_costs
 from cora.core.adaptation import apply_sea_wall, apply_wetland_reduction
 from cora.utils.population_data import WorldPopHandler, calculate_population_exposure
+from cora.utils.app_paths import is_frozen, user_data_dir, user_path
 
 class MplCanvas(FigureCanvasQTAgg):
     def __init__(self, parent=None, width=5, height=4, dpi=100):
@@ -117,7 +118,7 @@ class CoraGUI(QMainWindow):
 
         self.last_flooded_buildings = None
 
-        self.config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+        self.config_path = user_path("config.json")
         self.config = self._load_config()
 
         self.initUI()
@@ -422,7 +423,7 @@ class CoraGUI(QMainWindow):
             north, south, east, west = bbox
             url = generate_copernicus_dem_url(south, north, west, east, api_key)
             
-            downloads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
+            downloads_dir = user_path("downloads")
             os.makedirs(downloads_dir, exist_ok=True)
             
             filename = f"copernicus_dem_{south:.4f}_{north:.4f}_{west:.4f}_{east:.4f}.tif"
@@ -656,7 +657,7 @@ class CoraGUI(QMainWindow):
             else:
                 return
 
-        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        data_dir = user_path("data")
         start_dir = data_dir if os.path.isdir(data_dir) else os.path.expanduser("~")
 
         file_path, _ = QFileDialog.getOpenFileName(
@@ -1349,6 +1350,12 @@ class CoraGUI(QMainWindow):
         self.map_canvas.draw()
 
 def main():
+    # OSM and population caches are created relative to the working directory,
+    # which is "/" when the bundled app is launched from Finder. Anchor it to
+    # the writable user data directory instead.
+    if is_frozen():
+        os.chdir(user_data_dir())
+
     app = QApplication(sys.argv)
     ex = CoraGUI()
     ex.show()
