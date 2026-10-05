@@ -29,20 +29,49 @@ repository.
 
 ## Deploying
 
-The page is fully static (`next build` prerenders it), so any static host
-works.
+Production is [cora.ethanyanxu.com](https://cora.ethanyanxu.com), served by the
+existing Caddy service on the Windows home server `finprint-host`. Next.js
+exports static files to `out/`; no Node.js process runs on the server.
+Images are served directly from `public/`. `next start` does not support this
+export mode; use `npm run dev` for local development.
 
-Because the installer is too large to commit, host it separately — a GitHub
-release asset is the simplest option — and point the site at it:
+From this `web/` directory on a Windows PC with Node.js, Git, OpenSSH and
+access to the `finprint-host` SSH alias:
 
-```bash
-NEXT_PUBLIC_SITE_URL=https://your-domain.example
-NEXT_PUBLIC_DOWNLOAD_URL=https://github.com/OoEthanoO/cora_project/releases/download/v0.5.0/CORA-0.5.0.dmg
+```powershell
+npm run deploy
+# Restore the preceding deployed release:
+npm run deploy -- -Rollback
 ```
 
-`NEXT_PUBLIC_DOWNLOAD_URL` overrides the local `public/downloads/` path used in
-development. `NEXT_PUBLIC_SITE_URL` sets the canonical origin used for Open
-Graph image URLs.
+Commit changes first. Deployment installs the lockfile dependencies, checks
+the GitHub installer's size/checksum against `src/lib/release.json`, lints,
+builds, checks the export, and uploads a SHA-256-verified archive. It sets
+`NEXT_PUBLIC_SITE_URL` to the production origin and `NEXT_PUBLIC_DOWNLOAD_URL`
+to the matching GitHub release asset. The installer remains on GitHub;
+the server receives only the website's static files.
+
+Releases and deployment state live under `C:\ProgramData\CORA`. Activation
+validates the shared Caddy configuration before reloading it, checks a
+loopback-only endpoint on port 4186, and verifies the commit through HTTPS
+with certificate validation. Configuration is restored if activation fails.
+The final deployment check requires public `/version.txt` to match the active
+commit and `X-CORA-Host: finprint-host`. Old releases are retained for rollback.
+Caddy's existing SYSTEM startup task also starts CORA after a reboot.
+
+For the initial Vercel migration only, use `npm run deploy -- -MigrateDns`.
+After the local preflight passes, this adds a DNS-only Cloudflare CNAME from
+`cora.ethanyanxu.com` to `finprint.ethanyanxu.com`, following the existing home
+IP updater. The shared Cloudflare credential stays protected on the host.
+The previous wildcard and the new record ID are saved in
+`C:\ProgramData\CORA\dns-migration.json`. A failed initial HTTPS check removes
+the newly added DNS override and restores Caddy. Normal deployments and
+`-Rollback` do not modify DNS.
+
+Logs are in `C:\ProgramData\CORA\logs`. If public verification fails after
+successful activation, check DNS propagation before retrying. To undo only
+the migration's DNS override, run `C:\ProgramData\CORA\dns.ps1 -Rollback`
+in elevated PowerShell on the host; it refuses to remove a changed record.
 
 ## Updating the screenshot
 

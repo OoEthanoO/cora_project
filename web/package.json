@@ -5,12 +5,13 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "node -e \"console.error('Serve out/ with a static web server after npm run build; use npm run deploy for production.'); process.exit(1)\"",
     "lint": "eslint",
-    "stage-release": "node scripts/stage-release.mjs"
+    "stage-release": "node scripts/stage-release.mjs",
+    "deploy": "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File deploy/deploy.ps1"
   },
   "dependencies": {
-    "next": "16.3.0",
+    "next": "16.3.8",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -20,7 +21,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.3.0",
+    "eslint-config-next": "16.3.8",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
