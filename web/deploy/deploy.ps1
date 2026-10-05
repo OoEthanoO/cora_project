@@ -12,6 +12,8 @@ $WebRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $RemoteRoot = 'C:\ProgramData\CORA'
 $Domain = 'cora.ethanyanxu.com'
 $Tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+$Ssh = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh.exe'
+$Scp = Join-Path $env:SystemRoot 'System32\OpenSSH\scp.exe'
 $Utf8 = New-Object Text.UTF8Encoding $false
 
 function Invoke-Checked([string]$File, [string[]]$Arguments) {
@@ -25,8 +27,8 @@ function Invoke-Checked([string]$File, [string[]]$Arguments) {
 
 function Invoke-Remote([string]$Script) {
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
-    Invoke-Checked 'ssh.exe' @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', $SshHost,
-        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded")
+    Invoke-Checked $Ssh @('-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', $SshHost,
+        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -EncodedCommand $encoded")
 }
 
 $previousSite = $env:NEXT_PUBLIC_SITE_URL
@@ -81,15 +83,16 @@ try {
         finally { $stream.Dispose(); $hasher.Dispose() }
         Invoke-Remote @"
 `$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
 New-Item -ItemType Directory -Force -Path '$RemoteRoot' | Out-Null
 & icacls.exe '$RemoteRoot' /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if (`$LASTEXITCODE -ne 0) { throw 'Failed to secure the deployment directory.' }
 New-Item -ItemType Directory -Force -Path '$RemoteRoot\incoming' | Out-Null
 "@
         foreach ($name in 'host.ps1', 'dns.ps1') {
-            Invoke-Checked 'scp.exe' @('-q', '-o', 'BatchMode=yes', (Join-Path $PSScriptRoot $name), "${SshHost}:C:/ProgramData/CORA/$name")
+            Invoke-Checked $Scp @('-q', '-o', 'BatchMode=yes', (Join-Path $PSScriptRoot $name), "${SshHost}:C:/ProgramData/CORA/$name")
         }
-        Invoke-Checked 'scp.exe' @('-q', '-o', 'BatchMode=yes', $archive, "${SshHost}:C:/ProgramData/CORA/incoming/$archiveName")
+        Invoke-Checked $Scp @('-q', '-o', 'BatchMode=yes', $archive, "${SshHost}:C:/ProgramData/CORA/incoming/$archiveName")
         $dnsFlag = if ($MigrateDns) { ' -MigrateDns' } else { '' }
         Invoke-Remote "& '$RemoteRoot\host.ps1' -Archive '$RemoteRoot\incoming\$archiveName' -Version '$version' -Sha256 '$hash'$dnsFlag"
     }
@@ -100,7 +103,7 @@ New-Item -ItemType Directory -Force -Path '$RemoteRoot\incoming' | Out-Null
     $saved = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $expected = & ssh.exe -o BatchMode=yes $SshHost "powershell -NoProfile -NonInteractive -EncodedCommand $encoded" 2>$null
+        $expected = & $Ssh -o BatchMode=yes $SshHost "powershell -NoProfile -NonInteractive -OutputFormat Text -EncodedCommand $encoded" 2>$null
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $saved }
     if ($code -ne 0) { throw 'Cannot read the active release.' }

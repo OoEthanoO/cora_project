@@ -99,7 +99,7 @@ try {
         throw 'Existing CORA import differs; inspect it before changing configuration.'
     }
     $rootPath = $release.Replace('\', '/')
-    $config = @"
+    $publicConfig = @"
 # Managed by web/deploy/host.ps1.
 cora.ethanyanxu.com {
     root * "$rootPath"
@@ -125,7 +125,8 @@ cora.ethanyanxu.com {
         }
     }
 }
-
+"@
+    $healthConfig = @"
 # A private preflight endpoint verifies the files before the first DNS cutover.
 http://127.0.0.1:4186 {
     bind 127.0.0.1
@@ -133,10 +134,14 @@ http://127.0.0.1:4186 {
     file_server
 }
 "@
+    $config = $publicConfig + "`r`n`r`n" + $healthConfig
+    # Do not request a certificate while public DNS still leads to Vercel.
+    $initialMigration = $MigrateDns -and -not $state
+    $initialConfig = if ($initialMigration) { $healthConfig } else { $config }
     Copy-Item -LiteralPath $Main -Destination (Join-Path $Logs "Caddyfile-before-$name")
     if ([IO.File]::ReadAllText($Main) -ne $oldMain) { throw 'Shared Caddy configuration changed during preflight; retry.' }
     $changedConfig = $true
-    [IO.File]::WriteAllText($SiteFile, $config, $Utf8)
+    [IO.File]::WriteAllText($SiteFile, $initialConfig, $Utf8)
     if ($newMain -ne $oldMain) { [IO.File]::WriteAllText($Main, $newMain, $Utf8) }
     Reload-Caddy
     $probe = Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:4186/version.txt' -TimeoutSec 15
@@ -145,6 +150,23 @@ http://127.0.0.1:4186 {
     if (-not $page.Content.Contains('Coastal Risk Analyzer')) { throw 'Caddy preflight did not return CORA.' }
     Write-Host "Caddy preflight passed for $Version"
     if ($MigrateDns) { $dnsChanged = & (Join-Path $Root 'dns.ps1') -ExpectedVersion $Version }
+    if ($initialMigration) {
+        $dnsDeadline = (Get-Date).AddSeconds(120)
+        do {
+            $dnsReady = $true
+            foreach ($resolver in '1.1.1.1', '8.8.8.8') {
+                try {
+                    $answer = @(Resolve-DnsName -Name cora.ethanyanxu.com -Type CNAME -Server $resolver -DnsOnly -ErrorAction Stop)
+                    if (-not @($answer | Where-Object { $_.NameHost -eq 'finprint.ethanyanxu.com' }).Count) { $dnsReady = $false }
+                } catch { $dnsReady = $false }
+            }
+            if (-not $dnsReady) { Start-Sleep -Seconds 3 }
+        } while (-not $dnsReady -and (Get-Date) -lt $dnsDeadline)
+        if (-not $dnsReady) { throw 'Public DNS did not confirm the home-server CNAME in time.' }
+        Write-Host 'Public DNS confirmed; enabling automatic HTTPS.'
+        [IO.File]::WriteAllText($SiteFile, $config, $Utf8)
+        Reload-Caddy
+    }
     $deadline = (Get-Date).AddSeconds(180)
     $verified = $false
     do {
